@@ -61,6 +61,15 @@ public class GameService {
         return coralMcService;
     }
 
+    public void checkAllQueues(Guild guild) {
+        if (guild == null) return;
+        for (GameQueue queue : ctx.queues.all()) {
+            if (creating.add(queue.vcId)) {
+                ctx.scheduler.execute(() -> buildGameIfReady(guild, queue));
+            }
+        }
+    }
+
     /**
      * Chiamato quando qualcuno entra in un canale vocale. Il lavoro vero gira su
      * un thread separato: la creazione dei canali usa chiamate REST bloccanti che
@@ -106,7 +115,8 @@ public class GameService {
         game.createdAt = System.currentTimeMillis();
 
         List<GameMap> maps = ctx.maps.forMode(queue.playersEachTeam);
-        game.map = maps.isEmpty() ? "" : maps.get(random.nextInt(maps.size())).name;
+        if (maps.isEmpty()) maps = ctx.maps.all();
+        game.map = maps.isEmpty() ? "Bedwars" : maps.get(random.nextInt(maps.size())).name;
 
         List<String> ids = new ArrayList<>();
         for (Member m : members) ids.add(m.getId());

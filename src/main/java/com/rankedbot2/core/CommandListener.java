@@ -42,6 +42,12 @@ public class CommandListener extends ListenerAdapter {
             autoSetupQueuesAndMaps(guild);
         });
 
+        ctx.scheduler.scheduleAtFixedRate(() -> {
+            try {
+                event.getJDA().getGuilds().forEach(gameService::checkAllQueues);
+            } catch (Exception ignored) {}
+        }, 3, 3, java.util.concurrent.TimeUnit.SECONDS);
+
         System.out.println("Bot pronto: " + event.getJDA().getSelfUser().getAsTag());
     }
 
@@ -78,7 +84,10 @@ public class CommandListener extends ListenerAdapter {
         if (ctx.queues.all().isEmpty()) {
             for (net.dv8tion.jda.api.entities.channel.concrete.VoiceChannel vc : guild.getVoiceChannels()) {
                 String name = vc.getName().toLowerCase();
-                if (name.contains("2v2")) {
+                if (name.contains("1v1")) {
+                    ctx.queues.add(new com.rankedbot2.model.GameQueue(vc.getId(), 1, com.rankedbot2.model.GameQueue.PickingMode.AUTOMATIC, false));
+                    System.out.println("Auto-configurata coda 1v1 sul vocale: " + vc.getName());
+                } else if (name.contains("2v2")) {
                     ctx.queues.add(new com.rankedbot2.model.GameQueue(vc.getId(), 2, com.rankedbot2.model.GameQueue.PickingMode.AUTOMATIC, false));
                     System.out.println("Auto-configurata coda 2v2 sul vocale: " + vc.getName());
                 } else if (name.contains("3v3")) {
@@ -144,9 +153,8 @@ public class CommandListener extends ListenerAdapter {
 
     @Override
     public void onGuildVoiceUpdate(@NotNull GuildVoiceUpdateEvent event) {
-        if (event.getChannelJoined() == null) return;
         if (event.getMember().getUser().isBot()) return;
-        gameService.onVoiceJoin(event.getGuild(), event.getChannelJoined());
+        gameService.checkAllQueues(event.getGuild());
     }
 
     @Override
