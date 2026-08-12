@@ -1,14 +1,15 @@
 # Maven build output
 target/
 
-# Database, logs, executables and packages
-run/*.db
-run/*.log
-run/*.jar
+# Temporary databases and logs
+*.db
+*.log
 run/*.zip
 run/discloud_root/
 run/squarecloud_root/
 run/discloud_package/
+RankedBot/data.db
+RankedBot/*.log
 run/RankedBot/data.db
 run/RankedBot/*.log
 
@@ -16,5 +17,4 @@ run/RankedBot/*.log
 .claude/
 .idea/
 .vscode/
-*.log
 .DS_Store
