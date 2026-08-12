@@ -1,0 +1,90 @@
+# Chi puo' usare quale comando.
+# Valori ammessi: "everyone", uno o piu' ID ruolo separati da virgola,
+# oppure vuoto per disabilitare del tutto il comando.
+# Il proprietario del server puo' sempre usare tutto.
+#
+# Livelli: Admin > Staff > Moderator > Helper.
+# Piu' un comando e' difficile da annullare, meno ruoli lo possono usare.
+
+# Aperti a tutti i giocatori registrati
+help: everyone
+info: everyone
+register: everyone
+rename: everyone
+fix: everyone
+stats: everyone
+leaderboard: everyone
+transfergold: everyone
+theme: everyone
+queuestats: everyone
+gameinfo: everyone
+recap: everyone
+mecca: everyone
+pick: everyone
+submit: everyone
+void: everyone
+call: everyone
+partycreate: everyone
+partyinvite: everyone
+partyjoin: everyone
+partyleave: everyone
+partylist: everyone
+partypromote: everyone
+partywarp: everyone
+partykick: everyone
+clancreate: everyone
+clandisband: everyone
+claninvite: everyone
+clanjoin: everyone
+clanleave: everyone
+clankick: everyone
+clanstats: everyone
+claninfo: everyone
+clansettings: everyone
+clanlist: everyone
+clanlb: everyone
+cwregister: everyone
+cwunregister: everyone
+queues: everyone
+ranks: everyone
+maps: everyone
+levels: everyone
+
+# Scoring partite — Scorer, Staff, Admin
+score: 1537109077887557776,1537118680264212571,1537120244122783845
+undogame: 1537109077887557776,1537118680264212571,1537120244122783845
+win: 1537109077887557776,1537118680264212571,1537120244122783845
+lose: 1537109077887557776,1537118680264212571,1537120244122783845
+
+# Screenshare — Screensharer, Helper, Moderator, Staff, Admin
+screenshare: 1537109077203615805,1537120246379319408,1537120245557370960,1537118680264212571,1537120244122783845
+
+# Basso impatto (consultazione, annullare partite) — da Helper in su
+baninfo: 1537120246379319408,1537120245557370960,1537118680264212571,1537120244122783845
+forcevoid: 1537120246379319408,1537120245557370960,1537118680264212571,1537120244122783845
+
+# Moderazione (ban, strike) — Staff e Admin
+ban: 1537118680264212571,1537120244122783845
+unban: 1537118680264212571,1537120244122783845
+strike: 1537118680264212571,1537120244122783845
+
+# Distruttivi e configurazione — solo Admin
+wipe: 1537120244122783845
+modify: 1537120244122783845
+forceregister: 1537120244122783845
+forcerename: 1537120244122783845
+clanforcedisband: 1537120244122783845
+cwcreate: 1537120244122783845
+cwcancel: 1537120244122783845
+cwstart: 1537120244122783845
+addqueue: 1537120244122783845
+deletequeue: 1537120244122783845
+addrank: 1537120244122783845
+deleterank: 1537120244122783845
+addmap: 1537120244122783845
+deletemap: 1537120244122783845
+givetheme: 1537120244122783845
+removetheme: 1537120244122783845
+addhangout: 1537120244122783845
+reloadconfig: 1537120244122783845
+savedata: 1537120244122783845
