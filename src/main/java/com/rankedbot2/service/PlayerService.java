@@ -120,8 +120,15 @@ public class PlayerService {
 
     private void updateRegisteredRole(Guild guild, Member member) {
         long roleId = ctx.config.getId("registered-role");
-        if (roleId == 0) return;
-        Role role = guild.getRoleById(roleId);
+        Role role = roleId != 0 ? guild.getRoleById(roleId) : null;
+        if (role == null) {
+            for (Role r : guild.getRoles()) {
+                if (r.getName().equalsIgnoreCase("Registered")) {
+                    role = r;
+                    break;
+                }
+            }
+        }
         if (role == null || !guild.getSelfMember().canInteract(role)) return;
         if (!member.getRoles().contains(role)) {
             guild.addRoleToMember(member, role).queue(null, err -> {

@@ -38,9 +38,39 @@ public class CommandListener extends ListenerAdapter {
                     err -> System.err.println("Registrazione comandi fallita su "
                             + guild.getName() + ": " + err.getMessage()));
             ensureCommunityHangout(guild);
+            autoSetupRanks(guild);
         });
 
         System.out.println("Bot pronto: " + event.getJDA().getSelfUser().getAsTag());
+    }
+
+    private void autoSetupRanks(net.dv8tion.jda.api.entities.Guild guild) {
+        if (!ctx.ranks.all().isEmpty()) return;
+
+        record DefaultRank(String name, int start, int end, int win, int lose) {}
+        List<DefaultRank> defaults = List.of(
+                new DefaultRank("Coal", 0, 199, 35, 10),
+                new DefaultRank("Bronze", 200, 399, 30, 10),
+                new DefaultRank("Silver", 400, 599, 30, 10),
+                new DefaultRank("Gold", 600, 799, 30, 15),
+                new DefaultRank("Platinum", 800, 999, 25, 15),
+                new DefaultRank("Emerald", 1000, 1199, 25, 15),
+                new DefaultRank("Sapphire", 1200, 1399, 20, 20),
+                new DefaultRank("Amethyst", 1400, 1599, 15, 25),
+                new DefaultRank("Ruby", 1600, 1799, 10, 25),
+                new DefaultRank("Pearl", 1800, 1999, 5, 35),
+                new DefaultRank("Diamond", 2000, 2199, 5, 40)
+        );
+
+        for (DefaultRank def : defaults) {
+            for (net.dv8tion.jda.api.entities.Role role : guild.getRoles()) {
+                if (role.getName().equalsIgnoreCase(def.name)) {
+                    ctx.ranks.add(new com.rankedbot2.model.Rank(role.getId(), def.start, def.end, def.win, def.lose));
+                    System.out.println("Auto-mappato rank: " + def.name + " -> " + role.getId());
+                    break;
+                }
+            }
+        }
     }
 
     public static void ensureCommunityHangout(net.dv8tion.jda.api.entities.Guild guild) {
