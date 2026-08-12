@@ -190,8 +190,18 @@ public class GameService {
     }
 
     private Category categoryOrNull(Guild guild, String key) {
+        if (guild == null) return null;
         long id = ctx.config.getId(key);
-        return id == 0 ? null : guild.getCategoryById(id);
+        Category cat = id == 0 ? null : guild.getCategoryById(id);
+        if (cat != null) return cat;
+
+        for (Category c : guild.getCategories()) {
+            String name = c.getName().toLowerCase();
+            if (name.contains("rbw games") || name.contains("game channels") || name.contains("rbw queues") || name.contains("game")) {
+                return c;
+            }
+        }
+        return null;
     }
 
     private static String sanitize(String name) {

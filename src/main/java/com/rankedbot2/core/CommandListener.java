@@ -39,6 +39,7 @@ public class CommandListener extends ListenerAdapter {
                             + guild.getName() + ": " + err.getMessage()));
             ensureCommunityHangout(guild);
             autoSetupRanks(guild);
+            autoSetupQueuesAndMaps(guild);
         });
 
         System.out.println("Bot pronto: " + event.getJDA().getSelfUser().getAsTag());
@@ -70,6 +71,41 @@ public class CommandListener extends ListenerAdapter {
                     break;
                 }
             }
+        }
+    }
+
+    private void autoSetupQueuesAndMaps(net.dv8tion.jda.api.entities.Guild guild) {
+        if (ctx.queues.all().isEmpty()) {
+            for (net.dv8tion.jda.api.entities.channel.concrete.VoiceChannel vc : guild.getVoiceChannels()) {
+                String name = vc.getName().toLowerCase();
+                if (name.contains("2v2")) {
+                    ctx.queues.add(new com.rankedbot2.model.GameQueue(vc.getId(), 2, com.rankedbot2.model.GameQueue.PickingMode.AUTOMATIC, false));
+                    System.out.println("Auto-configurata coda 2v2 sul vocale: " + vc.getName());
+                } else if (name.contains("3v3")) {
+                    ctx.queues.add(new com.rankedbot2.model.GameQueue(vc.getId(), 3, com.rankedbot2.model.GameQueue.PickingMode.AUTOMATIC, false));
+                    System.out.println("Auto-configurata coda 3v3 sul vocale: " + vc.getName());
+                } else if (name.contains("4v4")) {
+                    ctx.queues.add(new com.rankedbot2.model.GameQueue(vc.getId(), 4, com.rankedbot2.model.GameQueue.PickingMode.CAPTAINS, false));
+                    System.out.println("Auto-configurata coda 4v4 sul vocale: " + vc.getName());
+                }
+            }
+        }
+
+        if (ctx.maps.all().isEmpty()) {
+            List<com.rankedbot2.model.GameMap> defaultMaps = List.of(
+                    new com.rankedbot2.model.GameMap("antenna", 112, "Yellow", "Green", 4),
+                    new com.rankedbot2.model.GameMap("archway", 87, "Red", "Green", 4),
+                    new com.rankedbot2.model.GameMap("boletum", 105, "Red", "Green", 4),
+                    new com.rankedbot2.model.GameMap("katsu", 96, "Red", "Green", 4),
+                    new com.rankedbot2.model.GameMap("swashbuckle", 85, "Red", "Green", 4),
+                    new com.rankedbot2.model.GameMap("nebuc", 106, "Gray", "Pink", 2),
+                    new com.rankedbot2.model.GameMap("apollo", 89, "Gray", "Pink", 2),
+                    new com.rankedbot2.model.GameMap("speedway", 82, "Gray", "Pink", 2)
+            );
+            for (var map : defaultMaps) {
+                ctx.maps.add(map);
+            }
+            System.out.println("Auto-popolate " + defaultMaps.size() + " mappe Bedwars di default nel database.");
         }
     }
 

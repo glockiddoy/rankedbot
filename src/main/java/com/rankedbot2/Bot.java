@@ -75,6 +75,7 @@ public class Bot {
 
         try {
             JDA jda = JDABuilder.createDefault(token)
+                    .setAutoReconnect(true)
                     .enableIntents(
                             GatewayIntent.GUILD_MEMBERS,
                             GatewayIntent.GUILD_MODERATION,
