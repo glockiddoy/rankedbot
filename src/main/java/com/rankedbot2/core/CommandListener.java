@@ -81,21 +81,31 @@ public class CommandListener extends ListenerAdapter {
     }
 
     private void autoSetupQueuesAndMaps(net.dv8tion.jda.api.entities.Guild guild) {
+        if (guild == null) return;
+
+        List<com.rankedbot2.model.GameQueue> existing = ctx.queues.all();
+        for (var q : existing) {
+            if (guild.getVoiceChannelById(q.vcId) == null) {
+                ctx.queues.delete(q.vcId);
+                System.out.println("Rimossa coda obsoleta per il vocale ID: " + q.vcId);
+            }
+        }
+
         if (ctx.queues.all().isEmpty()) {
             for (net.dv8tion.jda.api.entities.channel.concrete.VoiceChannel vc : guild.getVoiceChannels()) {
                 String name = vc.getName().toLowerCase();
                 if (name.contains("1v1")) {
                     ctx.queues.add(new com.rankedbot2.model.GameQueue(vc.getId(), 1, com.rankedbot2.model.GameQueue.PickingMode.AUTOMATIC, false));
-                    System.out.println("Auto-configurata coda 1v1 sul vocale: " + vc.getName());
+                    System.out.println("Auto-configurata coda 1v1 sul vocale: " + vc.getName() + " (" + vc.getId() + ")");
                 } else if (name.contains("2v2")) {
                     ctx.queues.add(new com.rankedbot2.model.GameQueue(vc.getId(), 2, com.rankedbot2.model.GameQueue.PickingMode.AUTOMATIC, false));
-                    System.out.println("Auto-configurata coda 2v2 sul vocale: " + vc.getName());
+                    System.out.println("Auto-configurata coda 2v2 sul vocale: " + vc.getName() + " (" + vc.getId() + ")");
                 } else if (name.contains("3v3")) {
                     ctx.queues.add(new com.rankedbot2.model.GameQueue(vc.getId(), 3, com.rankedbot2.model.GameQueue.PickingMode.AUTOMATIC, false));
-                    System.out.println("Auto-configurata coda 3v3 sul vocale: " + vc.getName());
+                    System.out.println("Auto-configurata coda 3v3 sul vocale: " + vc.getName() + " (" + vc.getId() + ")");
                 } else if (name.contains("4v4")) {
                     ctx.queues.add(new com.rankedbot2.model.GameQueue(vc.getId(), 4, com.rankedbot2.model.GameQueue.PickingMode.CAPTAINS, false));
-                    System.out.println("Auto-configurata coda 4v4 sul vocale: " + vc.getName());
+                    System.out.println("Auto-configurata coda 4v4 sul vocale: " + vc.getName() + " (" + vc.getId() + ")");
                 }
             }
         }
