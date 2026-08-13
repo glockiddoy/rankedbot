@@ -192,8 +192,13 @@ public class ScoreImageService {
     private void drawVersus(Graphics2D g, String mapName, String subtitle) {
         int centerY = HEIGHT / 2;
 
-        drawCentered(g, "VS", WIDTH / 2 + 4, centerY + 4, renderer.fontBold(120), new Color(0, 0, 0, 150));
-        drawCentered(g, "VS", WIDTH / 2, centerY, renderer.fontBold(120), new Color(252, 249, 244));
+        if (subtitle != null && !subtitle.isBlank()) {
+            drawCentered(g, subtitle, WIDTH / 2 + 2, centerY - 72, renderer.fontBold(28), new Color(0, 0, 0, 180));
+            drawCentered(g, subtitle, WIDTH / 2, centerY - 74, renderer.fontBold(28), new Color(220, 230, 245));
+        }
+
+        drawCentered(g, "VS", WIDTH / 2 + 4, centerY - 8, renderer.fontBold(110), new Color(0, 0, 0, 180));
+        drawCentered(g, "VS", WIDTH / 2, centerY - 12, renderer.fontBold(110), new Color(252, 249, 244));
 
         if (mapName != null && !mapName.trim().isEmpty()) {
             String trimmed = mapName.trim();
@@ -201,13 +206,21 @@ public class ScoreImageService {
             if (cleanName.isEmpty()) cleanName = trimmed;
             String title = Character.toUpperCase(cleanName.charAt(0))
                     + (cleanName.length() > 1 ? cleanName.substring(1) : "");
-            drawCentered(g, title, WIDTH / 2 + 3, centerY + 55, renderer.fontBold(42), new Color(0, 0, 0, 150));
-            drawCentered(g, title, WIDTH / 2, centerY + 52, renderer.fontBold(42), new Color(255, 209, 61));
-        }
 
-        if (subtitle != null && !subtitle.isBlank()) {
-            drawCentered(g, subtitle, WIDTH / 2 + 2, centerY - 88, renderer.fontBold(30), new Color(0, 0, 0, 150));
-            drawCentered(g, subtitle, WIDTH / 2, centerY - 90, renderer.fontBold(30), new Color(214, 220, 230));
+            Font font = renderer.fontBold(22);
+            g.setFont(font);
+            int textWidth = g.getFontMetrics().stringWidth(title);
+            int badgeWidth = Math.max(140, textWidth + 36);
+            int bx = WIDTH / 2 - badgeWidth / 2;
+            int by = centerY + 54;
+
+            g.setColor(new Color(15, 20, 28, 220));
+            g.fillRoundRect(bx, by, badgeWidth, 34, 16, 16);
+            g.setColor(new Color(255, 190, 40, 200));
+            g.setStroke(new BasicStroke(1.5f));
+            g.drawRoundRect(bx, by, badgeWidth, 34, 16, 16);
+
+            drawCentered(g, title, WIDTH / 2, by + 23, font, new Color(255, 215, 64));
         }
     }
 

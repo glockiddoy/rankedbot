@@ -479,8 +479,11 @@ public class GameService {
             game.pickTurn = 1;
         }
 
-        int maxPicks = (game.playersEachTeam == 3) ? 1 : 2;
-        game.picksLeft = Math.min(maxPicks, Math.min(freeSlots(game, game.pickTurn), game.remaining.size()));
+        int turnSlots = freeSlots(game, game.pickTurn);
+        int otherSlots = freeSlots(game, game.pickTurn == 1 ? 2 : 1);
+        int picksNeeded = Math.max(1, turnSlots - otherSlots);
+
+        game.picksLeft = Math.min(picksNeeded, Math.min(turnSlots, game.remaining.size()));
     }
 
     /** Posti ancora liberi nel team indicato. */
@@ -491,16 +494,31 @@ public class GameService {
 
     /**
      * Passa il turno all'altro capitano assegnandogli le pick in base alla modalità.
-     * Per il 3v3 (3 giocatori per team) l'ordine è 1-1-1-1 (1 sola pick per turno).
-     * Per le altre modalità l'ordine è 1-2-2-1 (fino a 2 pick per turno).
      */
     private void advanceTurn(Game game) {
-        int next = game.pickTurn == 1 ? 2 : 1;
-        if (freeSlots(game, next) <= 0) next = game.pickTurn;
+        int t1Slots = freeSlots(game, 1);
+        int t2Slots = freeSlots(game, 2);
+
+        int next;
+        if (t1Slots > t2Slots) {
+            next = 1;
+        } else if (t2Slots > t1Slots) {
+            next = 2;
+        } else {
+            next = game.pickTurn == 1 ? 2 : 1;
+        }
+
+        if (freeSlots(game, next) <= 0) {
+            next = next == 1 ? 2 : 1;
+        }
 
         game.pickTurn = next;
-        int maxPicks = (game.playersEachTeam == 3) ? 1 : 2;
-        game.picksLeft = Math.min(maxPicks, Math.min(freeSlots(game, next), game.remaining.size()));
+
+        int turnSlots = freeSlots(game, next);
+        int otherSlots = freeSlots(game, next == 1 ? 2 : 1);
+        int picksNeeded = Math.max(1, turnSlots - otherSlots);
+
+        game.picksLeft = Math.min(picksNeeded, Math.min(turnSlots, game.remaining.size()));
     }
 
     /** L'ultimo giocatore rimasto non viene scelto: entra da solo nel team con posto. */
@@ -536,7 +554,10 @@ public class GameService {
         if (!game.remaining.contains(targetId)) return "Questo giocatore non è disponibile per la pick";
 
         int captainTeam = game.teamOf(captainId);
-        if (captainTeam != game.pickTurn) return "Non è il tuo turno di pick";
+        if (captainTeam != game.pickTurn) {
+            String currentCaptain = game.pickTurn == 1 ? game.captain1 : game.captain2;
+            return "Non è il tuo turno di pick! Spetta al capitano del Team " + game.pickTurn + " (" + mention(currentCaptain) + ").";
+        }
 
         game.remaining.remove(targetId);
         if (captainTeam == 1) game.team1.add(targetId);
@@ -673,16 +694,21 @@ public class GameService {
     }
 
     public net.dv8tion.jda.api.entities.MessageEmbed pickingEmbed(Guild guild, Game game) {
+        String turnCaptainId = game.pickTurn == 1 ? game.captain1 : game.captain2;
+
         EmbedBuilder eb = embeds.builder()
+                .setColor(new java.awt.Color(255, 195, 0))
                 .setTitle("👑 FASE PICK — PARTITA #" + game.number + " (" + game.modeName() + ")")
-                .setDescription("Capitani, scegliete i compagni di squadra utilizzando `/pick`.\n")
+                .setDescription("> ⚔️ **Capitani, usate il comando `/pick <giocatore>` per selezionare i compagni di squadra!**\n")
                 .addField("🔴 Team 1 (Capitano: " + mention(game.captain1) + ")", listPlayers(game.team1), true)
                 .addField("🔵 Team 2 (Capitano: " + mention(game.captain2) + ")", listPlayers(game.team2), true)
-                .addField("🎯 Turno Attuale", "**Team " + game.pickTurn + "** — `" + game.picksLeft + " pick`", false)
+                .addField("🎯 Turno Attuale di Pick", "👉 **Spetta a:** " + mention(turnCaptainId) + " (`Team " + game.pickTurn + "`)\n⏳ **Pick rimanenti in questo turno:** `" + game.picksLeft + "`", false)
                 .addField("📋 Giocatori Disponibili (" + game.remaining.size() + ")", listPlayers(game.remaining), false);
+
         if (!game.map.isEmpty()) {
             String mapName = game.map.substring(0, 1).toUpperCase() + game.map.substring(1).toLowerCase();
-            eb.addField("🗺️ Mappa Sorteggiata", "**" + mapName + "**", true);
+            String cleanMap = mapName.replaceAll("\\d+$", "").trim();
+            eb.addField("🗺️ Mappa Sorteggiata", "**" + (cleanMap.isEmpty() ? mapName : cleanMap) + "**", true);
         }
         return eb.build();
     }
