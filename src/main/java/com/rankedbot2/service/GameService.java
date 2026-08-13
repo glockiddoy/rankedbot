@@ -92,9 +92,12 @@ public class GameService {
         long gameTimeout = ctx.config.getInt("abandoned-game-timeout", 120) * 60_000L;
 
         for (Game game : ctx.games.active()) {
+            long age = now - game.createdAt;
+            // Ignora le partite create negli ultimi 60 secondi per dare tempo a Discord di creare i canali
+            if (age < 60_000L) continue;
+
             boolean channelGone = game.textChannel == null || game.textChannel.isBlank()
                     || textChannelOrNull(guild, game.textChannel) == null;
-            long age = now - game.createdAt;
             boolean pickingExpired = game.state == Game.State.PICKING && age > pickingTimeout;
             boolean gameExpired = age > gameTimeout;
 
@@ -177,12 +180,15 @@ public class GameService {
      */
     private boolean freeUnscoredGamesOf(Guild guild, VoiceChannel vc, List<Game> activeGames) {
         Set<Integer> handled = new HashSet<>();
+        long now = System.currentTimeMillis();
 
         for (Member m : vc.getMembers()) {
             if (m.getUser().isBot()) continue;
 
             Game active = activeGameIn(activeGames, m.getId());
             if (active == null || active.state == Game.State.PICKING) continue;
+            // NON annullare partite create negli ultimi 90 secondi per dare tempo ai giocatori di essere spostati nei vocali di team
+            if (now - active.createdAt < 90_000L) continue;
             if (!handled.add(active.number)) continue;
 
             System.out.println("[queue] partita #" + active.number
@@ -376,7 +382,12 @@ public class GameService {
      */
     private void balanceTeams(Game game, List<String> ids) {
         List<List<String>> units = groupByParty(ids);
-        units.sort(Comparator.comparingInt((List<String> u) -> totalElo(u)).reversed());
+        // Prima i party (dimensione > 1), poi i singoli (dimensione == 1), ordinati per ELO
+        units.sort((u1, u2) -> {
+            if (u1.size() > 1 && u2.size() == 1) return -1;
+            if (u1.size() == 1 && u2.size() > 1) return 1;
+            return Integer.compare(totalElo(u2), totalElo(u1));
+        });
 
         int max = game.playersEachTeam;
         for (List<String> unit : units) {
