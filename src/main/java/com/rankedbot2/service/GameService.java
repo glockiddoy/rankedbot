@@ -469,8 +469,18 @@ public class GameService {
             assignLastPlayer(guild, game);
         }
 
-        game.pickTurn = 1;
-        game.picksLeft = Math.min((game.playersEachTeam == 3 ? 1 : 2), Math.min(freeSlots(game, 1), game.remaining.size()));
+        // Se un team ha più giocatori dell'altro a causa dei membri del party pre-assegnati,
+        // la prima pick spetta di diritto all'altro capitano (team con meno giocatori)!
+        if (game.team1.size() > game.team2.size()) {
+            game.pickTurn = 2;
+        } else if (game.team2.size() > game.team1.size()) {
+            game.pickTurn = 1;
+        } else {
+            game.pickTurn = 1;
+        }
+
+        int maxPicks = (game.playersEachTeam == 3) ? 1 : 2;
+        game.picksLeft = Math.min(maxPicks, Math.min(freeSlots(game, game.pickTurn), game.remaining.size()));
     }
 
     /** Posti ancora liberi nel team indicato. */

@@ -197,8 +197,10 @@ public class ScoreImageService {
 
         if (mapName != null && !mapName.trim().isEmpty()) {
             String trimmed = mapName.trim();
-            String title = Character.toUpperCase(trimmed.charAt(0))
-                    + (trimmed.length() > 1 ? trimmed.substring(1) : "");
+            String cleanName = trimmed.replaceAll("\\d+$", "").trim();
+            if (cleanName.isEmpty()) cleanName = trimmed;
+            String title = Character.toUpperCase(cleanName.charAt(0))
+                    + (cleanName.length() > 1 ? cleanName.substring(1) : "");
             drawCentered(g, title, WIDTH / 2 + 3, centerY + 55, renderer.fontBold(42), new Color(0, 0, 0, 150));
             drawCentered(g, title, WIDTH / 2, centerY + 52, renderer.fontBold(42), new Color(255, 209, 61));
         }
