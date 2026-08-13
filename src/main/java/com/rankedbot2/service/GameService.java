@@ -473,10 +473,28 @@ public class GameService {
     }
 
     /** L'ultimo giocatore rimasto non viene scelto: entra da solo nel team con posto. */
-    private void assignLastPlayer(Game game) {
+    private void assignLastPlayer(Guild guild, Game game) {
+        if (game.remaining.isEmpty()) return;
         String last = game.remaining.remove(0);
-        if (freeSlots(game, 1) > 0) game.team1.add(last);
+        int team = freeSlots(game, 1) > 0 ? 1 : 2;
+        if (team == 1) game.team1.add(last);
         else game.team2.add(last);
+
+        VoiceChannel targetVc = team == 1 ? voiceChannelOrNull(guild, game.vc1) : voiceChannelOrNull(guild, game.vc2);
+        moveMemberToVc(guild, last, targetVc);
+    }
+
+    private void moveMemberToVc(Guild guild, String userId, VoiceChannel target) {
+        if (target == null || userId == null || guild == null) return;
+        Member m = guild.getMemberById(userId);
+        if (m != null) {
+            target.upsertPermissionOverride(m)
+                    .grant(EnumSet.of(Permission.VIEW_CHANNEL, Permission.VOICE_CONNECT))
+                    .queue(null, err -> {});
+            if (m.getVoiceState() != null && m.getVoiceState().inAudioChannel()) {
+                guild.moveVoiceMember(m, target).queue(null, err -> {});
+            }
+        }
     }
 
     /** Esegue una pick. Ritorna null se ok, altrimenti il messaggio di errore. */
@@ -493,11 +511,14 @@ public class GameService {
         if (captainTeam == 1) game.team1.add(targetId);
         else game.team2.add(targetId);
 
+        VoiceChannel targetVc = captainTeam == 1 ? voiceChannelOrNull(guild, game.vc1) : voiceChannelOrNull(guild, game.vc2);
+        moveMemberToVc(guild, targetId, targetVc);
+
         game.picksLeft--;
 
         // Con un solo giocatore rimasto non c'è più nulla da scegliere.
         if (game.remaining.size() == 1) {
-            assignLastPlayer(game);
+            assignLastPlayer(guild, game);
         } else if (game.picksLeft <= 0) {
             advanceTurn(game);
         }
@@ -623,11 +644,11 @@ public class GameService {
     public net.dv8tion.jda.api.entities.MessageEmbed pickingEmbed(Guild guild, Game game) {
         EmbedBuilder eb = embeds.builder()
                 .setTitle("👑 FASE PICK — PARTITA #" + game.number + " (" + game.modeName() + ")")
-                .setDescription("Capitani, scegliete i compagni di squadra utilizzando `/pick`.")
-                .addField("🔴 Capitano Team 1", mention(game.captain1), true)
-                .addField("🔵 Capitano Team 2", mention(game.captain2), true)
-                .addField("🎯 Turno Attuale", "**Team " + game.pickTurn + "** — `" + game.picksLeft + " pick`", true)
-                .addField("📋 Giocatori Disponibili", listPlayers(game.remaining), false);
+                .setDescription("Capitani, scegliete i compagni di squadra utilizzando `/pick`.\n")
+                .addField("🔴 Team 1 (Capitano: " + mention(game.captain1) + ")", listPlayers(game.team1), true)
+                .addField("🔵 Team 2 (Capitano: " + mention(game.captain2) + ")", listPlayers(game.team2), true)
+                .addField("🎯 Turno Attuale", "**Team " + game.pickTurn + "** — `" + game.picksLeft + " pick`", false)
+                .addField("📋 Giocatori Disponibili (" + game.remaining.size() + ")", listPlayers(game.remaining), false);
         if (!game.map.isEmpty()) {
             String mapName = game.map.substring(0, 1).toUpperCase() + game.map.substring(1).toLowerCase();
             eb.addField("🗺️ Mappa Sorteggiata", "**" + mapName + "**", true);
