@@ -404,12 +404,26 @@ public class GameService {
         return sum;
     }
 
+    private boolean isPartyLeader(String userId) {
+        Party p = ctx.partyOf(userId);
+        return p != null && userId.equals(p.leader);
+    }
+
     private void setupCaptains(Game game, List<String> ids) {
         List<String> sorted = new ArrayList<>(ids);
-        sorted.sort(Comparator.comparingInt((String id) -> {
-            Player p = ctx.players.get(id);
-            return p == null ? 0 : p.elo;
-        }).reversed());
+        sorted.sort((id1, id2) -> {
+            boolean isLeader1 = isPartyLeader(id1);
+            boolean isLeader2 = isPartyLeader(id2);
+
+            if (isLeader1 && !isLeader2) return -1;
+            if (!isLeader1 && isLeader2) return 1;
+
+            Player p1 = ctx.players.get(id1);
+            Player p2 = ctx.players.get(id2);
+            int elo1 = p1 == null ? 0 : p1.elo;
+            int elo2 = p2 == null ? 0 : p2.elo;
+            return Integer.compare(elo2, elo1);
+        });
 
         game.captain1 = sorted.get(0);
         game.captain2 = sorted.get(1);
