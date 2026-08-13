@@ -42,11 +42,11 @@ public class BotContext {
     public final ClanRepo clans;
 
     /** Party in memoria: userId del leader -> party. */
-    public final Map<String, Party> parties = new HashMap<>();
+    public final Map<String, Party> parties = new java.util.concurrent.ConcurrentHashMap<>();
     /** Inviti clan in memoria: userId invitato -> clanId. */
-    public final Map<String, Integer> clanInvites = new HashMap<>();
+    public final Map<String, Integer> clanInvites = new java.util.concurrent.ConcurrentHashMap<>();
     /** Clan war attive: numero -> clan war. */
-    public final Map<Integer, ClanWar> clanWars = new HashMap<>();
+    public final Map<Integer, ClanWar> clanWars = new java.util.concurrent.ConcurrentHashMap<>();
 
     /** Esegue anche la creazione partite, che fa chiamate REST bloccanti. */
     public final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(4);
@@ -99,8 +99,9 @@ public class BotContext {
 
     /** Party a cui appartiene un giocatore, null se in nessuno. */
     public Party partyOf(String userId) {
+        if (userId == null) return null;
         for (Party p : parties.values()) {
-            if (p.contains(userId)) return p;
+            if (p != null && p.contains(userId)) return p;
         }
         return null;
     }

@@ -247,6 +247,54 @@ public class CommandListener extends ListenerAdapter {
         }
     }
 
+    @Override
+    public void onButtonInteraction(@NotNull net.dv8tion.jda.api.events.interaction.component.ButtonInteractionEvent event) {
+        String btnId = event.getButton().getId();
+        if (btnId == null || !btnId.startsWith("party_join:")) return;
+
+        String[] parts = btnId.split(":");
+        if (parts.length < 3) return;
+
+        String leaderId = parts[1];
+        String targetId = parts[2];
+
+        if (!event.getUser().getId().equals(targetId)) {
+            event.replyEmbeds(embeds.error("Questo invito al party non è rivolto a te!")).setEphemeral(true).queue();
+            return;
+        }
+
+        com.rankedbot2.model.Party party = ctx.parties.get(leaderId);
+        if (party == null) {
+            event.replyEmbeds(embeds.error("Questo party non esiste più o è stato sciolto.")).setEphemeral(true).queue();
+            return;
+        }
+
+        if (ctx.partyOf(targetId) != null) {
+            event.replyEmbeds(embeds.error("Sei già all'interno di un party!")).setEphemeral(true).queue();
+            return;
+        }
+
+        if (!party.hasValidInvite(targetId)) {
+            event.replyEmbeds(embeds.error("L'invito per questo party è scaduto o non è più valido.")).setEphemeral(true).queue();
+            return;
+        }
+
+        int max = ctx.config.getInt("max-party-members", 3);
+        if (party.size() >= max) {
+            event.replyEmbeds(embeds.error("Questo party è già pieno!")).setEphemeral(true).queue();
+            return;
+        }
+
+        party.invites.remove(targetId);
+        party.members.add(targetId);
+
+        net.dv8tion.jda.api.EmbedBuilder eb = embeds.builder()
+                .setTitle("🎉 PARTY ACCETTATO")
+                .setDescription(event.getUser().getAsMention() + " è entrato nel party di <@" + leaderId + ">!");
+
+        event.replyEmbeds(eb.build()).queue();
+    }
+
     private boolean allowsUnregistered() {
         return ctx.config.getBoolean("unregistered-cmd-usage", false);
     }

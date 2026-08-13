@@ -384,7 +384,8 @@ public class GameService {
             Party party = ctx.partyOf(id);
             List<String> unit = new ArrayList<>();
             if (party != null) {
-                for (String member : party.members) {
+                List<String> partyMembersSnapshot = new ArrayList<>(party.members);
+                for (String member : partyMembersSnapshot) {
                     if (ids.contains(member) && used.add(member)) unit.add(member);
                 }
             }

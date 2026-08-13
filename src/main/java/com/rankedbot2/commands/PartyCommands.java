@@ -81,12 +81,12 @@ public class PartyCommands extends CommandBase {
     }
 
     private void invite(SlashCommandInteractionEvent e) {
-        Party party = ctx.partyOf(e.getUser().getId());
+        String leaderId = e.getUser().getId();
+        Party party = ctx.partyOf(leaderId);
         if (party == null) {
-            fail(e, ctx.msg("not-in-party"));
-            return;
-        }
-        if (!party.leader.equals(e.getUser().getId())) {
+            party = new Party(leaderId);
+            ctx.parties.put(leaderId, party);
+        } else if (!party.leader.equals(leaderId)) {
             fail(e, ctx.msg("not-party-leader"));
             return;
         }
@@ -98,9 +98,12 @@ public class PartyCommands extends CommandBase {
         }
 
         User target = e.getOption("giocatore").getAsUser();
-        Player targetPlayer = player(target);
-        if (targetPlayer == null) {
-            fail(e, ctx.msg("invalid-player"));
+        if (target.isBot()) {
+            fail(e, "Non puoi invitare un bot nel party");
+            return;
+        }
+        if (target.getId().equals(leaderId)) {
+            fail(e, "Sei già il leader di questo party");
             return;
         }
         if (ctx.partyOf(target.getId()) != null) {
@@ -115,8 +118,16 @@ public class PartyCommands extends CommandBase {
         int minutes = ctx.config.getInt("invite-expiration", 3);
         party.invites.put(target.getId(), System.currentTimeMillis() + minutes * 60_000L);
 
-        ok(e, target.getAsMention() + " è stato invitato. L'invito scade tra "
-                + minutes + " minuti. Usa `/party join leader:" + e.getUser().getName() + "` per accettare.");
+        net.dv8tion.jda.api.interactions.components.buttons.Button joinBtn =
+                net.dv8tion.jda.api.interactions.components.buttons.Button.success("party_join:" + leaderId + ":" + target.getId(), "✅ Accetta Invito");
+
+        EmbedBuilder eb = embeds.builder()
+                .setTitle("🎉 INVITO AL PARTY")
+                .setDescription(target.getAsMention() + ", sei stato invitato nel party di " + e.getUser().getAsMention() + "!")
+                .addField("⏱️ Scadenza", "L'invito scade tra `" + minutes + " minuti`.", false)
+                .addField("👉 Come accettare", "Clicca il pulsante **Accetta Invito** qui sotto oppure usa `/party join leader:" + e.getUser().getAsMention() + "`.", false);
+
+        e.replyEmbeds(eb.build()).addActionRow(joinBtn).queue();
     }
 
     private void join(SlashCommandInteractionEvent e) {

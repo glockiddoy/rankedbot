@@ -1,20 +1,19 @@
 package com.rankedbot2.model;
 
-import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
- * I party vivono solo in memoria: come nel bot originale gli inviti scadono
- * al riavvio e il party stesso non sopravvive a un restart.
+ * I party vivono in memoria e sono resi thread-safe per la concorrenza con i comandi slash e il thread delle code.
  */
 public class Party {
 
     public String leader;
-    public final List<String> members = new ArrayList<>();
+    public final List<String> members = new CopyOnWriteArrayList<>();
     /** userId invitato -> istante di scadenza dell'invito. */
-    public final Map<String, Long> invites = new HashMap<>();
+    public final Map<String, Long> invites = new ConcurrentHashMap<>();
 
     public Party(String leader) {
         this.leader = leader;
