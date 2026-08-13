@@ -251,7 +251,7 @@ public class GameService {
             balanceTeams(game, ids);
             game.state = Game.State.STARTED;
         } else {
-            setupCaptains(game, ids);
+            setupCaptains(guild, game, ids);
             // In un 1v1 i due capitani sono già i due team: non c'è nulla da scegliere.
             game.state = game.remaining.isEmpty() ? Game.State.STARTED : Game.State.PICKING;
         }
@@ -303,13 +303,8 @@ public class GameService {
             sendGameStart(textChannel, guild, game);
             announceGame(guild, game);
         } else {
-            for (String id : ids) {
-                Member m = guild.getMemberById(id);
-                if (m != null && m.getVoiceState() != null && m.getVoiceState().inAudioChannel()) {
-                    guild.moveVoiceMember(m, vc1).queue(null, err -> {
-                    });
-                }
-            }
+            for (String id : game.team1) moveMemberToVc(guild, id, vc1);
+            for (String id : game.team2) moveMemberToVc(guild, id, vc2);
             textChannel.sendMessageEmbeds(pickingEmbed(guild, game)).queue();
         }
     }
@@ -409,7 +404,7 @@ public class GameService {
         return p != null && userId.equals(p.leader);
     }
 
-    private void setupCaptains(Game game, List<String> ids) {
+    private void setupCaptains(Guild guild, Game game, List<String> ids) {
         List<String> sorted = new ArrayList<>(ids);
         sorted.sort((id1, id2) -> {
             boolean isLeader1 = isPartyLeader(id1);
@@ -427,12 +422,55 @@ public class GameService {
 
         game.captain1 = sorted.get(0);
         game.captain2 = sorted.get(1);
+
         game.team1.add(game.captain1);
         game.team2.add(game.captain2);
-        game.remaining.addAll(sorted.subList(2, sorted.size()));
+
+        Set<String> assigned = new HashSet<>();
+        assigned.add(game.captain1);
+        assigned.add(game.captain2);
+
+        // Auto-preassegna i compagni del party del Capitano 1 nel Team 1
+        Party party1 = ctx.partyOf(game.captain1);
+        if (party1 != null) {
+            List<String> members = new ArrayList<>(party1.members);
+            for (String memberId : members) {
+                if (ids.contains(memberId) && !assigned.contains(memberId)) {
+                    if (game.team1.size() < game.playersEachTeam) {
+                        game.team1.add(memberId);
+                        assigned.add(memberId);
+                    }
+                }
+            }
+        }
+
+        // Auto-preassegna i compagni del party del Capitano 2 nel Team 2
+        Party party2 = ctx.partyOf(game.captain2);
+        if (party2 != null) {
+            List<String> members = new ArrayList<>(party2.members);
+            for (String memberId : members) {
+                if (ids.contains(memberId) && !assigned.contains(memberId)) {
+                    if (game.team2.size() < game.playersEachTeam) {
+                        game.team2.add(memberId);
+                        assigned.add(memberId);
+                    }
+                }
+            }
+        }
+
+        // I rimanenti giocatori non in party vanno in remaining per le pick dei capitani
+        for (String id : ids) {
+            if (!assigned.contains(id)) {
+                game.remaining.add(id);
+            }
+        }
+
+        if (game.remaining.size() == 1) {
+            assignLastPlayer(guild, game);
+        }
+
         game.pickTurn = 1;
-        // Ordine 1-2-2-1: il primo capitano apre con una sola scelta.
-        game.picksLeft = 1;
+        game.picksLeft = Math.min((game.playersEachTeam == 3 ? 1 : 2), Math.min(freeSlots(game, 1), game.remaining.size()));
     }
 
     /** Posti ancora liberi nel team indicato. */
