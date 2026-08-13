@@ -144,14 +144,7 @@ public class GameService {
                 return;
             }
 
-            // Chi torna in coda con una partita mai scorata la abbandona: tenerla
-            // aperta bloccherebbe lui e tutti gli altri della sua partita.
             List<Game> activeGames = ctx.games.active();
-            if (!ctx.config.getBoolean("queue-blocks-unscored", false)
-                    && freeUnscoredGamesOf(guild, vc, activeGames)) {
-                activeGames = ctx.games.active();
-            }
-
             Eligibility eligibility = eligibilityOf(vc, activeGames);
             List<Member> present = eligibility.ready;
 
@@ -171,31 +164,6 @@ public class GameService {
         } finally {
             creating.remove(queue.vcId);
         }
-    }
-
-    /**
-     * Annulla le partite non scorate dei giocatori che sono rientrati in coda.
-     * Una partita in PICKING resta intoccata: lì la scelta dei team è in corso e
-     * il vocale di coda è ancora quello dove stanno aspettando.
-     */
-    private boolean freeUnscoredGamesOf(Guild guild, VoiceChannel vc, List<Game> activeGames) {
-        Set<Integer> handled = new HashSet<>();
-        long now = System.currentTimeMillis();
-
-        for (Member m : vc.getMembers()) {
-            if (m.getUser().isBot()) continue;
-
-            Game active = activeGameIn(activeGames, m.getId());
-            if (active == null || active.state == Game.State.PICKING) continue;
-            // NON annullare partite create negli ultimi 90 secondi per dare tempo ai giocatori di essere spostati nei vocali di team
-            if (now - active.createdAt < 90_000L) continue;
-            if (!handled.add(active.number)) continue;
-
-            System.out.println("[queue] partita #" + active.number
-                    + " annullata: " + m.getEffectiveName() + " è rientrato in coda senza scorarla");
-            voidGame(guild, active);
-        }
-        return !handled.isEmpty();
     }
 
     /** Chi in un vocale di coda può giocare e chi no, con il motivo. */
