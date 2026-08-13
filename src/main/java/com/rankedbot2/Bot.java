@@ -73,8 +73,19 @@ public class Bot {
             status = OnlineStatus.ONLINE;
         }
 
+        // Inizializzazione Peppone Ticket Bot
+        File pepponeFolder = new File("Peppone");
+        if (!pepponeFolder.exists()) pepponeFolder.mkdirs();
+        File pepponeConfigFile = new File(pepponeFolder, "config.yml");
+        com.peppone.Config pepponeConfig = new com.peppone.Config(pepponeConfigFile);
+        com.peppone.TicketService pepponeTicketService = new com.peppone.TicketService(pepponeConfig, pepponeFolder);
+        com.peppone.TicketListener pepponeTicketListener = new com.peppone.TicketListener(pepponeConfig, pepponeTicketService, ctx.monitor);
+
+        String pepponeToken = pepponeConfig.getString("token", "");
+        boolean useSeparatePepponeToken = !pepponeToken.isEmpty() && !pepponeToken.equalsIgnoreCase(token);
+
         try {
-            JDA jda = JDABuilder.createDefault(token)
+            JDABuilder builder = JDABuilder.createDefault(token)
                     .setAutoReconnect(true)
                     .enableIntents(
                             GatewayIntent.GUILD_MEMBERS,
@@ -87,10 +98,21 @@ public class Bot {
                     .setChunkingFilter(ChunkingFilter.ALL)
                     .setStatus(status)
                     .setActivity(net.dv8tion.jda.api.entities.Activity.competing("Bedwars Ranked ⚔️"))
-                    .addEventListeners(new CommandListener(ctx, embeds, gameService, commands), antiNukeService)
-                    .build();
+                    .addEventListeners(new CommandListener(ctx, embeds, gameService, commands), antiNukeService);
 
+            if (!useSeparatePepponeToken) {
+                builder.addEventListeners(pepponeTicketListener);
+                System.out.println("[Peppone] Ticket Bot integrato ed attivo sulla sessione principale di RankedBot!");
+            }
+
+            JDA jda = builder.build();
             ctx.setJda(jda);
+
+            if (useSeparatePepponeToken) {
+                System.out.println("[Peppone] Token dedicato rilevato in Peppone/config.yml, avvio istanza separata...");
+                com.peppone.PepponeBot.start(pepponeFolder);
+            }
+
             Runtime.getRuntime().addShutdownHook(new Thread(ctx::shutdown));
         } catch (Exception e) {
             System.err.println("Avvio fallito: " + e.getMessage());
