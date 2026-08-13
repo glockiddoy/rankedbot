@@ -28,6 +28,11 @@ public class Perms {
         return !config.has(command);
     }
 
+    /**
+     * Accetta sia ID ruolo sia nomi ("Admin, Staff"). I nomi restano validi se
+     * il server viene ricreato o i ruoli rifatti, gli ID no: con gli ID un
+     * comando si ritrova disabilitato senza che nessuno abbia toccato nulla.
+     */
     public boolean canUse(String command, Member member) {
         if (member == null) return false;
         if (member.isOwner()) return true;
@@ -36,11 +41,14 @@ public class Perms {
         String raw = config.getString(command);
         if (raw.equalsIgnoreCase("everyone")) return true;
 
-        List<Long> allowed = config.getIdList(command);
+        List<String> allowed = config.getStringList(command);
         if (allowed.isEmpty()) return false;
 
         for (Role role : member.getRoles()) {
-            if (allowed.contains(role.getIdLong())) return true;
+            for (String entry : allowed) {
+                if (entry.equalsIgnoreCase(role.getName())) return true;
+                if (entry.equals(role.getId())) return true;
+            }
         }
         return false;
     }

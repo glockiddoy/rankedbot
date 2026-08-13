@@ -23,6 +23,12 @@ import net.dv8tion.jda.api.interactions.commands.build.OptionData;
 import net.dv8tion.jda.api.interactions.commands.build.SlashCommandData;
 import net.dv8tion.jda.api.interactions.commands.build.SubcommandData;
 
+import javax.imageio.ImageIO;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
+import java.io.File;
+import java.net.URL;
 import java.util.EnumSet;
 import java.util.List;
 
@@ -78,8 +84,9 @@ public class ConfigCommands extends CommandBase {
                                 .addOption(OptionType.USER, "giocatore", "Giocatore", true)
                                 .addOption(OptionType.STRING, "tema", "Nome del tema", true),
 
-                        new SubcommandData("addhangout", "Crea il canale vocale Community Hangout nella categoria RBW System")
-                                .addOption(OptionType.STRING, "nome", "Nome del canale (default: Community Hangout)", false),
+                        new SubcommandData("mapimage", "Carica lo sfondo di una mappa per le immagini di partita")
+                                .addOption(OptionType.STRING, "mappa", "Nome della mappa", true, true)
+                                .addOption(OptionType.ATTACHMENT, "immagine", "Screenshot della mappa (vuoto per rimuoverlo)", false),
 
                         new SubcommandData("reload", "Ricarica i file di configurazione")));
     }
@@ -117,7 +124,7 @@ public class ConfigCommands extends CommandBase {
             case "levels" -> listLevels(e);
             case "givetheme" -> giveTheme(e);
             case "removetheme" -> removeTheme(e);
-            case "addhangout" -> addHangout(e);
+            case "mapimage" -> mapImage(e);
             case "reload" -> reload(e);
             default -> fail(e, "Sottocomando sconosciuto");
         }
@@ -337,50 +344,83 @@ public class ConfigCommands extends CommandBase {
         ok(e, "Tema `" + theme + "` rimosso a " + target.getAsMention());
     }
 
+    /**
+     * Carica lo sfondo di una mappa. Il bot gira su un host remoto, quindi
+     * mettere i file in RankedBot/maps/ a mano non è praticabile: si allega
+     * l'immagine al comando e ci pensa il bot a ritagliarla e salvarla.
+     */
+    private void mapImage(SlashCommandInteractionEvent e) {
+        String mapName = e.getOption("mappa").getAsString().trim();
+        GameMap map = ctx.maps.get(mapName);
+        if (map == null) {
+            fail(e, "La mappa `" + mapName + "` non esiste. Guarda `/config maps`.");
+            return;
+        }
+
+        File mapsFolder = new File(ctx.dataFolder, "maps");
+        File target = new File(mapsFolder, map.name.toLowerCase() + ".png");
+
+        if (e.getOption("immagine") == null) {
+            if (target.isFile() && target.delete()) {
+                ok(e, "Sfondo di **" + map.name + "** rimosso: torna quello generato dai colori.");
+            } else {
+                fail(e, "La mappa **" + map.name + "** non ha uno sfondo caricato.");
+            }
+            return;
+        }
+
+        var attachment = e.getOption("immagine").getAsAttachment();
+        if (!attachment.isImage()) {
+            fail(e, "Devi allegare un'immagine (png o jpg).");
+            return;
+        }
+
+        e.deferReply().queue();
+        ctx.scheduler.execute(() -> {
+            try {
+                BufferedImage source = ImageIO.read(new URL(attachment.getUrl()));
+                if (source == null) {
+                    fail(e, "Non sono riuscito a leggere l'immagine allegata.");
+                    return;
+                }
+
+                if (!mapsFolder.isDirectory() && !mapsFolder.mkdirs()) {
+                    fail(e, "Non riesco a creare la cartella `RankedBot/maps/` sull'host.");
+                    return;
+                }
+
+                ImageIO.write(cropToBanner(source), "png", target);
+                ok(e, "Sfondo di **" + map.name + "** aggiornato. "
+                        + "Vale dalla prossima partita su questa mappa.");
+            } catch (Exception ex) {
+                ex.printStackTrace();
+                fail(e, "Errore nel salvataggio dello sfondo: " + ex.getMessage());
+            }
+        });
+    }
+
+    /** Riporta l'immagine a 1280x720 riempiendo il riquadro e tagliando l'eccesso. */
+    private static BufferedImage cropToBanner(BufferedImage source) {
+        int width = 1280;
+        int height = 720;
+
+        double scale = Math.max((double) width / source.getWidth(), (double) height / source.getHeight());
+        int scaledWidth = (int) Math.ceil(source.getWidth() * scale);
+        int scaledHeight = (int) Math.ceil(source.getHeight() * scale);
+
+        BufferedImage out = new BufferedImage(width, height, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = out.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        g.setRenderingHint(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+        g.drawImage(source, (width - scaledWidth) / 2, (height - scaledHeight) / 2,
+                scaledWidth, scaledHeight, null);
+        g.dispose();
+        return out;
+    }
+
     private void reload(SlashCommandInteractionEvent e) {
         ctx.reloadConfigs();
         ok(e, "Configurazione ricaricata");
     }
 
-    private void addHangout(SlashCommandInteractionEvent e) {
-        String channelName = e.getOption("nome") != null ? e.getOption("nome").getAsString().trim() : "Community Hangout";
-        var guild = guild(e);
-
-        Category category = null;
-        for (Category c : guild.getCategories()) {
-            if (c.getName().equalsIgnoreCase("RBW System") || c.getName().equalsIgnoreCase("rbw system")) {
-                category = c;
-                break;
-            }
-        }
-
-        if (category == null) {
-            long catId = ctx.config.getId("game-vcs-category");
-            if (catId != 0) {
-                category = guild.getCategoryById(catId);
-            }
-        }
-
-        if (category == null) {
-            category = guild.createCategory("RBW System").complete();
-        }
-
-        for (VoiceChannel vc : category.getVoiceChannels()) {
-            if (vc.getName().equalsIgnoreCase(channelName) || vc.getName().equalsIgnoreCase("🔊 " + channelName)) {
-                fail(e, "Il canale vocale `" + vc.getName() + "` esiste già nella categoria `" + category.getName() + "`!");
-                return;
-            }
-        }
-
-        final Category targetCategory = category;
-        targetCategory.createVoiceChannel(channelName)
-                .addPermissionOverride(guild.getPublicRole(),
-                        EnumSet.of(Permission.VIEW_CHANNEL, Permission.VOICE_CONNECT, Permission.VOICE_SPEAK),
-                        null)
-                .queue(vc -> {
-                    ok(e, "Canale vocale " + vc.getAsMention() + " creato con successo nella categoria **" + targetCategory.getName() + "**!");
-                }, err -> {
-                    fail(e, "Errore durante la creazione del canale vocale: " + err.getMessage());
-                });
-    }
 }

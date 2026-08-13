@@ -288,19 +288,22 @@ public class ClanCommands extends CommandBase {
 
         e.deferReply().queue();
 
-        if (ctx.config.getBoolean("s-enabled", false)) {
-            try {
-                byte[] image = statsImages.renderClan(guild(e), clan);
-                if (image != null) {
-                    e.getHook().sendFiles(FileUpload.fromData(image, "clanstats.png")).queue();
-                    return;
+        // Il disegno scarica la skin del leader: fuori dal thread eventi.
+        async(e, () -> {
+            if (ctx.config.getBoolean("s-enabled", false)) {
+                try {
+                    byte[] image = statsImages.renderClan(guild(e), clan);
+                    if (image != null) {
+                        e.getHook().sendFiles(FileUpload.fromData(image, "clanstats.png")).queue();
+                        return;
+                    }
+                } catch (Exception ex) {
+                    System.err.println("Immagine clan stats non generata: " + ex.getMessage());
                 }
-            } catch (Exception ex) {
-                System.err.println("Immagine clan stats non generata: " + ex.getMessage());
             }
-        }
 
-        e.getHook().sendMessageEmbeds(clanEmbed(clan)).queue();
+            e.getHook().sendMessageEmbeds(clanEmbed(clan)).queue();
+        });
     }
 
     private net.dv8tion.jda.api.entities.MessageEmbed clanEmbed(Clan clan) {

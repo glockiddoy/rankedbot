@@ -48,7 +48,7 @@ public class ModCommands extends CommandBase {
                                 new SubcommandData("strike", "Assegna uno strike (elo + ban progressivo)")
                                         .addOption(OptionType.USER, "giocatore", "Giocatore", true)
                                         .addOption(OptionType.STRING, "motivo", "Motivo dello strike", true),
-                                new SubcommandData("wipe", "Azzera le statistiche di un giocatore")
+                                new SubcommandData("wipe", "Azzera le statistiche (mantiene registrazione, IGN, clan e temi)")
                                         .addOption(OptionType.USER, "giocatore", "Giocatore da azzerare", false)
                                         .addOption(OptionType.BOOLEAN, "tutti", "Azzera TUTTI i giocatori", false),
                                 new SubcommandData("modify", "Modifica una statistica di un giocatore")
@@ -288,9 +288,13 @@ public class ModCommands extends CommandBase {
     private void wipe(SlashCommandInteractionEvent e) {
         boolean all = e.getOption("tutti") != null && e.getOption("tutti").getAsBoolean();
 
+        int startingElo = playerService.startingElo();
+
         if (all) {
-            ctx.players.deleteAll();
-            ok(e, "Statistiche di **tutti** i giocatori azzerate");
+            int count = ctx.players.resetAllStats(startingElo);
+            ok(e, "Statistiche azzerate per **" + count + "** giocatori.\n"
+                    + "Registrazione, IGN, clan, temi e ban sono stati mantenuti.");
+            refreshAll(guild(e));
             return;
         }
 
@@ -306,10 +310,29 @@ public class ModCommands extends CommandBase {
             return;
         }
 
-        String ign = p.ign;
-        ctx.players.delete(target.getId());
-        ctx.players.create(target.getId(), ign, playerService.startingElo());
+        ctx.players.resetStats(target.getId(), startingElo);
+
+        Player updated = player(target);
+        Member member = memberOf(guild(e), target.getId());
+        if (updated != null && member != null) {
+            playerService.updateMember(guild(e), member, updated);
+        }
         ok(e, ctx.msg("successfully-wiped"));
+    }
+
+    /**
+     * Riallinea nickname e ruoli rank dopo un wipe totale. Fuori dal thread
+     * eventi: sono due chiamate REST per giocatore.
+     */
+    private void refreshAll(Guild guild) {
+        if (guild == null) return;
+
+        ctx.scheduler.execute(() -> {
+            for (Player p : ctx.players.all()) {
+                Member member = guild.getMemberById(p.id);
+                if (member != null) playerService.updateMember(guild, member, p);
+            }
+        });
     }
 
     private void modify(SlashCommandInteractionEvent e) {

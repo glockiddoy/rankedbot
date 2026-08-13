@@ -30,6 +30,23 @@ public abstract class CommandBase implements SlashCommand {
         return Arrays.asList(names);
     }
 
+    /**
+     * Esegue il lavoro fuori dal thread eventi di JDA. Generare un'immagine
+     * significa scaricare le teste dei giocatori: sul thread del gateway
+     * bloccherebbe ogni altro evento del bot finché non finisce.
+     * Va usato solo dopo un deferReply().
+     */
+    protected void async(SlashCommandInteractionEvent e, Runnable work) {
+        ctx.scheduler.execute(() -> {
+            try {
+                work.run();
+            } catch (Exception ex) {
+                ex.printStackTrace();
+                fail(e, "Errore durante l'esecuzione del comando: " + ex.getMessage());
+            }
+        });
+    }
+
     protected void reply(SlashCommandInteractionEvent e, MessageEmbed embed) {
         if (e.isAcknowledged()) e.getHook().sendMessageEmbeds(embed).queue();
         else e.replyEmbeds(embed).queue();

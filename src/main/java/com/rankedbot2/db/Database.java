@@ -25,6 +25,17 @@ public class Database {
 
     private void createSchema() throws SQLException {
         try (Statement st = connection.createStatement()) {
+            // WAL: le letture non aspettano le scritture. Senza, ogni salvataggio
+            // di un player bloccava le query in corso.
+            st.execute("PRAGMA journal_mode=WAL");
+            st.execute("PRAGMA synchronous=NORMAL");
+            // La connessione è una sola condivisa fra thread eventi JDA, scheduler
+            // e monitor. Senza attesa, due scritture insieme fanno fallire la
+            // query con "database is locked" invece di mettersi in coda.
+            st.execute("PRAGMA busy_timeout=5000");
+        }
+
+        try (Statement st = connection.createStatement()) {
             st.executeUpdate("""
                     CREATE TABLE IF NOT EXISTS players (
                         id TEXT PRIMARY KEY,
@@ -138,6 +149,19 @@ public class Database {
         addColumnIfMissing("games", "kill_changes", "TEXT NOT NULL DEFAULT ''");
         addColumnIfMissing("games", "death_changes", "TEXT NOT NULL DEFAULT ''");
         addColumnIfMissing("games", "coral_match", "INTEGER NOT NULL DEFAULT 0");
+        addColumnIfMissing("games", "ended_at", "INTEGER NOT NULL DEFAULT 0");
+
+        createIndexes();
+    }
+
+    /** Le colonne su cui il bot filtra di continuo mentre controlla le code. */
+    private void createIndexes() throws SQLException {
+        try (Statement st = connection.createStatement()) {
+            st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_games_state ON games(state)");
+            st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_games_text_channel ON games(text_channel)");
+            st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_games_coral_match ON games(coral_match)");
+            st.executeUpdate("CREATE INDEX IF NOT EXISTS idx_players_ign ON players(lower(ign))");
+        }
     }
 
     /** Migrazione leggera per i database creati da versioni precedenti. */

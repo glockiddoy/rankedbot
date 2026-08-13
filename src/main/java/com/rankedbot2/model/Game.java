@@ -44,6 +44,8 @@ public class Game {
     /** ID partita CoralMC usata per l'autoscore, 0 se scorata a mano. */
     public long coralMatch;
     public long createdAt;
+    /** Quando la partita è stata scorata o annullata, 0 se ancora in corso. */
+    public long endedAt;
     public int clanWar = -1;
     public int clan1 = -1;
     public int clan2 = -1;
@@ -63,6 +65,20 @@ public class Game {
         if (team1.contains(userId)) return 1;
         if (team2.contains(userId)) return 2;
         return 0;
+    }
+
+    /** Gli MVP della partita: il campo ne contiene più di uno separati da virgola. */
+    public List<String> mvpIds() {
+        List<String> out = new ArrayList<>();
+        if (mvp == null || mvp.isBlank()) return out;
+        for (String id : mvp.split(",")) {
+            if (!id.isBlank()) out.add(id.trim());
+        }
+        return out;
+    }
+
+    public boolean isMvp(String userId) {
+        return userId != null && mvpIds().contains(userId);
     }
 
     public boolean isCaptain(String userId) {

@@ -21,9 +21,12 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Immagine di fine partita: sfondo della mappa, nome della mappa al centro e una
@@ -46,6 +49,46 @@ public class ScoreImageService {
     private static final Color CARD_FILL = new Color(12, 14, 18, 176);
     private static final Color CARD_STROKE = new Color(255, 255, 255, 46);
     private static final Color MVP_STROKE = new Color(255, 205, 66);
+    private static final Duration HEAD_TIMEOUT = Duration.ofSeconds(4);
+
+    /**
+     * Dati della mappa che influenzano lo sfondo generato. I colori sono quelli
+     * dei due letti configurati in `/config addmap`, così l'immagine richiama
+     * la partita vera invece di essere una tinta a caso.
+     */
+    public static class MapStyle {
+        public final String name;
+        public final String teamColor1;
+        public final String teamColor2;
+
+        public MapStyle(String name, String teamColor1, String teamColor2) {
+            this.name = name;
+            this.teamColor1 = teamColor1;
+            this.teamColor2 = teamColor2;
+        }
+
+        public static MapStyle of(String name) {
+            return new MapStyle(name, null, null);
+        }
+    }
+
+    /** Colori dei letti di Minecraft usati dalle mappe. */
+    private static Color teamColor(String name, Color fallback) {
+        if (name == null) return fallback;
+        return switch (name.trim().toLowerCase()) {
+            case "red" -> new Color(196, 48, 44);
+            case "blue" -> new Color(53, 84, 191);
+            case "green" -> new Color(58, 143, 53);
+            case "yellow" -> new Color(216, 175, 42);
+            case "aqua", "cyan" -> new Color(52, 168, 178);
+            case "white" -> new Color(206, 209, 214);
+            case "pink" -> new Color(198, 79, 149);
+            case "gray", "grey" -> new Color(102, 108, 116);
+            case "purple" -> new Color(126, 61, 176);
+            case "orange" -> new Color(214, 118, 36);
+            default -> fallback;
+        };
+    }
 
     /** Riga della card di un giocatore. */
     public static class Entry {
@@ -54,20 +97,34 @@ public class ScoreImageService {
         public final int eloAfter;
         public final int delta;
         public final boolean mvp;
+        /** Testo alternativo alla variazione di elo, usato a inizio partita. */
+        public final String label;
 
         public Entry(String ign, int eloBefore, int eloAfter, int delta, boolean mvp) {
+            this(ign, eloBefore, eloAfter, delta, mvp, null);
+        }
+
+        public Entry(String ign, int eloBefore, int eloAfter, int delta, boolean mvp, String label) {
             this.ign = ign;
             this.eloBefore = eloBefore;
             this.eloAfter = eloAfter;
             this.delta = delta;
             this.mvp = mvp;
+            this.label = label;
+        }
+
+        /** Card di inizio partita: elo attuale al posto della variazione. */
+        public static Entry atStart(String ign, int elo, boolean captain) {
+            return new Entry(ign, elo, elo, 0, captain, elo + " ELO");
         }
     }
 
     private final BotContext ctx;
     private final CardRenderer renderer;
-    private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(6)).build();
+    private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(4)).build();
     private final Map<String, BufferedImage> headCache = new ConcurrentHashMap<>();
+    /** Un solo sfondo alla volta: tenerne di più sprecherebbe memoria sull'host. */
+    private final Map<String, BufferedImage> backgroundCache = new ConcurrentHashMap<>();
 
     public ScoreImageService(BotContext ctx) {
         this.ctx = ctx;
@@ -81,10 +138,17 @@ public class ScoreImageService {
      * nome del file di sfondo cercato in RankedBot/maps/.
      */
     public byte[] render(String mapName, List<Entry> winners, List<Entry> losers) throws Exception {
+        return render(MapStyle.of(mapName), winners, losers);
+    }
+
+    public byte[] render(MapStyle style, List<Entry> winners, List<Entry> losers) throws Exception {
+        String mapName = style == null ? null : style.name;
+        prefetchHeads(winners, losers);
+
         BufferedImage canvas = new BufferedImage(WIDTH, HEIGHT, BufferedImage.TYPE_INT_ARGB);
         Graphics2D g = graphics(canvas);
 
-        drawBackground(g, mapName);
+        drawBackground(g, style);
         drawMapTitle(g, mapName);
         drawLogos(g);
         drawRow(g, winners, ROW_MARGIN, true);
@@ -94,6 +158,55 @@ public class ScoreImageService {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         ImageIO.write(canvas, "png", out);
         return out.toByteArray();
+    }
+
+    /**
+     * Immagine di inizio partita: stesso sfondo del recap, ma i due team uno
+     * sopra l'altro con "VS" al centro al posto del nome della mappa.
+     */
+    public byte[] renderGameStart(String mapName, String subtitle,
+                                  List<Entry> team1, List<Entry> team2) throws Exception {
+        return renderGameStart(MapStyle.of(mapName), subtitle, team1, team2);
+    }
+
+    public byte[] renderGameStart(MapStyle style, String subtitle,
+                                  List<Entry> team1, List<Entry> team2) throws Exception {
+        String mapName = style == null ? null : style.name;
+        prefetchHeads(team1, team2);
+
+        BufferedImage canvas = new BufferedImage(WIDTH, HEIGHT, BufferedImage.TYPE_INT_ARGB);
+        Graphics2D g = graphics(canvas);
+
+        drawBackground(g, style);
+        drawVersus(g, mapName, subtitle);
+        drawLogos(g);
+        drawRow(g, team1, ROW_MARGIN, true);
+        drawRow(g, team2, HEIGHT - ROW_MARGIN - CARD_HEIGHT, false);
+
+        g.dispose();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        ImageIO.write(canvas, "png", out);
+        return out.toByteArray();
+    }
+
+    private void drawVersus(Graphics2D g, String mapName, String subtitle) {
+        int centerY = HEIGHT / 2;
+
+        drawCentered(g, "VS", WIDTH / 2 + 4, centerY + 4, renderer.fontBold(120), new Color(0, 0, 0, 150));
+        drawCentered(g, "VS", WIDTH / 2, centerY, renderer.fontBold(120), new Color(252, 249, 244));
+
+        if (mapName != null && !mapName.trim().isEmpty()) {
+            String trimmed = mapName.trim();
+            String title = Character.toUpperCase(trimmed.charAt(0))
+                    + (trimmed.length() > 1 ? trimmed.substring(1) : "");
+            drawCentered(g, title, WIDTH / 2 + 3, centerY + 55, renderer.fontBold(42), new Color(0, 0, 0, 150));
+            drawCentered(g, title, WIDTH / 2, centerY + 52, renderer.fontBold(42), new Color(255, 209, 61));
+        }
+
+        if (subtitle != null && !subtitle.isBlank()) {
+            drawCentered(g, subtitle, WIDTH / 2 + 2, centerY - 88, renderer.fontBold(30), new Color(0, 0, 0, 150));
+            drawCentered(g, subtitle, WIDTH / 2, centerY - 90, renderer.fontBold(30), new Color(214, 220, 230));
+        }
     }
 
     private void drawLogos(Graphics2D g) {
@@ -135,11 +248,11 @@ public class ScoreImageService {
      * Sfondo: l'immagine della mappa se c'è, altrimenti lo sfondo generico delle
      * card. A differenza di /stats resta nitido, è il soggetto dell'immagine.
      */
-    private void drawBackground(Graphics2D g, String mapName) {
-        BufferedImage picture = readImage(mapBackgroundFile(mapName));
+    private void drawBackground(Graphics2D g, MapStyle style) {
+        String mapName = style == null ? null : style.name;
+        BufferedImage picture = readImage(mapBackgroundFile(mapName), mapName);
         if (picture == null) {
-            g.setPaint(new GradientPaint(0, 0, new Color(58, 62, 68), 0, HEIGHT, new Color(26, 28, 32)));
-            g.fillRect(0, 0, WIDTH, HEIGHT);
+            drawGeneratedBackground(g, style);
         } else {
             drawCover(g, picture);
         }
@@ -153,6 +266,69 @@ public class ScoreImageService {
         g.fillRect(0, HEIGHT - band, WIDTH, band);
     }
 
+    /**
+     * Sfondo disegnato quando la mappa non ha una sua immagine in RankedBot/maps/.
+     * I colori derivano dal nome, così ogni mappa ha sempre lo stesso aspetto e
+     * due mappe diverse non si confondono.
+     */
+    private void drawGeneratedBackground(Graphics2D g, MapStyle style) {
+        String seed = style == null || style.name == null || style.name.isBlank()
+                ? "ranked" : style.name.toLowerCase();
+        float hue = Math.abs(seed.hashCode() % 360) / 360f;
+
+        // Senza colori configurati si ripiega su due tinte derivate dal nome:
+        // resta comunque una mappa sempre uguale a se stessa.
+        Color first = teamColor(style == null ? null : style.teamColor1,
+                Color.getHSBColor(hue, 0.55f, 0.55f));
+        Color second = teamColor(style == null ? null : style.teamColor2,
+                Color.getHSBColor((hue + 0.45f) % 1f, 0.55f, 0.55f));
+
+        g.setPaint(new GradientPaint(0, 0, darken(first, 0.32f), WIDTH, HEIGHT, darken(second, 0.26f)));
+        g.fillRect(0, 0, WIDTH, HEIGHT);
+
+        // Diagonale che separa i due colori: richiama i due team che si affrontano.
+        g.setColor(new Color(second.getRed(), second.getGreen(), second.getBlue(), 46));
+        g.fillPolygon(new int[]{WIDTH, WIDTH, 0}, new int[]{0, HEIGHT, HEIGHT}, 3);
+
+        // Isole stilizzate: rombi sfumati, il motivo visivo del bedwars.
+        drawIsland(g, WIDTH * 0.18, HEIGHT * 0.34, 300, first);
+        drawIsland(g, WIDTH * 0.82, HEIGHT * 0.66, 300, second);
+        drawIsland(g, WIDTH * 0.50, HEIGHT * 0.50, 190, blend(first, second));
+
+        g.setPaint(new java.awt.RadialGradientPaint(
+                new java.awt.geom.Point2D.Float(WIDTH / 2f, HEIGHT / 2f), WIDTH * 0.62f,
+                new float[]{0.55f, 1f},
+                new Color[]{new Color(0, 0, 0, 0), new Color(0, 0, 0, 120)}));
+        g.fillRect(0, 0, WIDTH, HEIGHT);
+    }
+
+    /** Rombo sfumato, come un'isola vista dall'alto. */
+    private void drawIsland(Graphics2D g, double cx, double cy, int size, Color color) {
+        int half = size / 2;
+        g.setPaint(new java.awt.RadialGradientPaint(
+                new java.awt.geom.Point2D.Double(cx, cy), size * 0.75f,
+                new float[]{0f, 1f},
+                new Color[]{new Color(color.getRed(), color.getGreen(), color.getBlue(), 60),
+                        new Color(color.getRed(), color.getGreen(), color.getBlue(), 0)}));
+        g.fillPolygon(
+                new int[]{(int) cx, (int) cx + half, (int) cx, (int) cx - half},
+                new int[]{(int) cy - half / 2, (int) cy, (int) cy + half / 2, (int) cy},
+                4);
+    }
+
+    private static Color darken(Color c, float factor) {
+        return new Color(
+                Math.round(c.getRed() * factor),
+                Math.round(c.getGreen() * factor),
+                Math.round(c.getBlue() * factor));
+    }
+
+    private static Color blend(Color a, Color b) {
+        return new Color((a.getRed() + b.getRed()) / 2,
+                (a.getGreen() + b.getGreen()) / 2,
+                (a.getBlue() + b.getBlue()) / 2);
+    }
+
     private File mapBackgroundFile(String mapName) {
         File maps = new File(ctx.dataFolder, "maps");
         if (mapName != null && !mapName.isBlank() && maps.isDirectory()) {
@@ -164,17 +340,53 @@ public class ScoreImageService {
                 if (file.isFile()) return file;
             }
         }
-        File fallback = new File(new File(ctx.dataFolder, "themes"), "background.png");
-        return fallback.isFile() ? fallback : null;
+        // Nessun ripiego su themes/background.png: era lo stesso sfondo per ogni
+        // partita. Senza immagine della mappa si disegna quello generato, che
+        // almeno cambia da mappa a mappa.
+        return null;
     }
 
-    private BufferedImage readImage(File file) {
-        if (file == null || !file.isFile()) return null;
-        try {
-            return ImageIO.read(file);
-        } catch (Exception e) {
-            return null;
+    /**
+     * Legge lo sfondo tenendolo in cache: il PNG della mappa pesa qualche MB e
+     * ridecodificarlo a ogni scoring costava più del disegno stesso. La chiave
+     * include la data di modifica, così sostituire il file ha effetto subito.
+     */
+    private BufferedImage readImage(File file, String mapName) {
+        if (file != null && file.isFile()) {
+            String key = file.getAbsolutePath() + "|" + file.lastModified();
+            BufferedImage cached = backgroundCache.get(key);
+            if (cached != null) return cached;
+
+            try {
+                BufferedImage image = ImageIO.read(file);
+                if (image != null) {
+                    backgroundCache.clear();
+                    backgroundCache.put(key, image);
+                    return image;
+                }
+            } catch (Exception ignored) {}
         }
+
+        if (mapName != null && !mapName.isBlank()) {
+            String safe = mapName.replaceAll("[^a-zA-Z0-9-_ ]", "").trim().toLowerCase();
+            String key = "resource:" + safe;
+            BufferedImage cached = backgroundCache.get(key);
+            if (cached != null) return cached;
+
+            for (String ext : new String[]{".jpg", ".png", ".jpeg"}) {
+                try (var is = getClass().getResourceAsStream("/maps/" + safe + ext)) {
+                    if (is != null) {
+                        BufferedImage image = ImageIO.read(is);
+                        if (image != null) {
+                            backgroundCache.put(key, image);
+                            return image;
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+
+        return null;
     }
 
     /** Riempie tutta la tela mantenendo le proporzioni, tagliando l'eccesso. */
@@ -249,13 +461,44 @@ public class ScoreImageService {
         int textX = headX + HEAD_SIZE + 14;
         int textWidth = x + width - 14 - textX;
 
-        String name = entry.mvp ? "♛ " + entry.ign : entry.ign;
-        drawFitted(g, name, textX, y + 44, textWidth, 26, NAME_COLOR);
+        // Niente simboli tipo ♛: il font Minecraft non li ha e uscirebbe un
+        // quadratino. La targhetta è disegnata, quindi non dipende dal font.
+        int badgeWidth = 0;
+        if (entry.mvp) {
+            String badge = entry.label != null ? "C" : "MVP";
+            badgeWidth = drawBadge(g, badge, x + width - 12, y + 10) + 8;
+        }
+        drawFitted(g, entry.ign, textX, y + 44, textWidth - badgeWidth, 26, NAME_COLOR);
 
-        Color color = entry.delta >= 0 ? WIN_COLOR : LOSS_COLOR;
-        String delta = (entry.delta >= 0 ? "+" : "") + entry.delta
-                + " [" + entry.eloBefore + " > " + entry.eloAfter + "]";
-        drawFitted(g, delta, textX, y + 76, textWidth, 22, color);
+        String line;
+        Color color;
+        if (entry.label != null) {
+            line = entry.label;
+            color = new Color(255, 209, 61);
+        } else {
+            line = (entry.delta >= 0 ? "+" : "") + entry.delta
+                    + " [" + entry.eloBefore + " > " + entry.eloAfter + "]";
+            color = entry.delta >= 0 ? WIN_COLOR : LOSS_COLOR;
+        }
+        drawFitted(g, line, textX, y + 76, textWidth, 22, color);
+    }
+
+    /** Targhetta dorata in alto a destra della card. Ritorna la larghezza usata. */
+    private int drawBadge(Graphics2D g, String text, int rightX, int y) {
+        Font font = renderer.fontBold(15);
+        g.setFont(font);
+
+        int textWidth = g.getFontMetrics().stringWidth(text);
+        int boxWidth = textWidth + 14;
+        int boxHeight = 22;
+        int x = rightX - boxWidth;
+
+        g.setColor(new Color(255, 205, 66, 235));
+        g.fillRoundRect(x, y, boxWidth, boxHeight, 8, 8);
+
+        g.setColor(new Color(28, 22, 6));
+        g.drawString(text, x + 7, y + boxHeight - 6);
+        return boxWidth;
     }
 
     /** Scrive il testo rimpicciolendo il font finché non entra nello spazio dato. */
@@ -280,27 +523,55 @@ public class ScoreImageService {
         g.drawString(text, centerX - g.getFontMetrics().stringWidth(text) / 2, y);
     }
 
-    /** Testa del giocatore dal servizio pubblico; null se non raggiungibile. */
-    private BufferedImage fetchHead(String ign) {
-        if (ign == null || ign.isBlank()) return null;
+    /**
+     * Scarica tutte le teste in parallelo prima di disegnare. In sequenza erano
+     * 8 richieste una dopo l'altra, ed erano il grosso dell'attesa dello scoring.
+     */
+    private void prefetchHeads(List<Entry> winners, List<Entry> losers) {
+        List<Entry> all = new ArrayList<>();
+        if (winners != null) all.addAll(winners);
+        if (losers != null) all.addAll(losers);
 
-        String url = "https://mc-heads.net/avatar/" + URLEncoder.encode(ign, StandardCharsets.UTF_8) + "/64";
-        BufferedImage cached = headCache.get(url);
-        if (cached != null) return cached;
+        List<CompletableFuture<?>> pending = new ArrayList<>();
+        for (Entry entry : all) {
+            String url = headUrl(entry.ign);
+            if (url == null || headCache.containsKey(url)) continue;
 
-        try {
             HttpRequest request = HttpRequest.newBuilder(URI.create(url))
-                    .timeout(Duration.ofSeconds(6))
+                    .timeout(HEAD_TIMEOUT)
                     .GET()
                     .build();
-            HttpResponse<byte[]> response = http.send(request, HttpResponse.BodyHandlers.ofByteArray());
-            if (response.statusCode() != 200) return null;
 
-            BufferedImage image = ImageIO.read(new ByteArrayInputStream(response.body()));
-            if (image != null) headCache.put(url, image);
-            return image;
-        } catch (Exception e) {
-            return null;
+            pending.add(http.sendAsync(request, HttpResponse.BodyHandlers.ofByteArray())
+                    .thenAccept(response -> {
+                        if (response.statusCode() != 200) return;
+                        try {
+                            BufferedImage image = ImageIO.read(new ByteArrayInputStream(response.body()));
+                            if (image != null) headCache.put(url, image);
+                        } catch (Exception ignored) {
+                        }
+                    })
+                    .exceptionally(err -> null));
         }
+
+        if (pending.isEmpty()) return;
+        try {
+            // Le teste sono un dettaglio: se il servizio non risponde in fretta si
+            // disegna comunque, con il riquadro vuoto al posto dell'avatar.
+            CompletableFuture.allOf(pending.toArray(new CompletableFuture[0]))
+                    .get(HEAD_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (Exception ignored) {
+        }
+    }
+
+    private String headUrl(String ign) {
+        if (ign == null || ign.isBlank()) return null;
+        return "https://mc-heads.net/avatar/" + URLEncoder.encode(ign, StandardCharsets.UTF_8) + "/64";
+    }
+
+    /** Testa già scaricata da prefetchHeads; null se non disponibile. */
+    private BufferedImage fetchHead(String ign) {
+        String url = headUrl(ign);
+        return url == null ? null : headCache.get(url);
     }
 }

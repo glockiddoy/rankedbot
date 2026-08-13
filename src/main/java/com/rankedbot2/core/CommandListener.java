@@ -37,15 +37,19 @@ public class CommandListener extends ListenerAdapter {
                             + " comandi slash su " + guild.getName()),
                     err -> System.err.println("Registrazione comandi fallita su "
                             + guild.getName() + ": " + err.getMessage()));
-            ensureCommunityHangout(guild);
             autoSetupRanks(guild);
             autoSetupQueuesAndMaps(guild);
         });
 
-        ctx.scheduler.scheduleAtFixedRate(() -> {
+        // scheduleAtFixedRate annulla il task per sempre se questo lancia
+        // qualcosa: qui si cattura Throwable, altrimenti un singolo errore
+        // spegnerebbe in silenzio la scansione delle code.
+        ctx.monitor.scheduleAtFixedRate(() -> {
             try {
                 event.getJDA().getGuilds().forEach(gameService::checkAllQueues);
-            } catch (Exception ignored) {}
+            } catch (Throwable t) {
+                System.err.println("[queue] errore nella scansione code: " + t);
+            }
         }, 3, 3, java.util.concurrent.TimeUnit.SECONDS);
 
         System.out.println("Bot pronto: " + event.getJDA().getSelfUser().getAsTag());
@@ -115,6 +119,8 @@ public class CommandListener extends ListenerAdapter {
                     new com.rankedbot2.model.GameMap("antenna", 112, "Yellow", "Green", 4),
                     new com.rankedbot2.model.GameMap("archway", 87, "Red", "Green", 4),
                     new com.rankedbot2.model.GameMap("boletum", 105, "Red", "Green", 4),
+                    new com.rankedbot2.model.GameMap("rise", 95, "Red", "Green", 4),
+                    new com.rankedbot2.model.GameMap("invasion", 100, "Red", "Green", 4),
                     new com.rankedbot2.model.GameMap("katsu", 96, "Red", "Green", 4),
                     new com.rankedbot2.model.GameMap("swashbuckle", 85, "Red", "Green", 4),
                     new com.rankedbot2.model.GameMap("nebuc", 106, "Gray", "Pink", 2),
@@ -128,43 +134,28 @@ public class CommandListener extends ListenerAdapter {
         }
     }
 
-    public static void ensureCommunityHangout(net.dv8tion.jda.api.entities.Guild guild) {
-        net.dv8tion.jda.api.entities.channel.concrete.Category category = null;
-        for (net.dv8tion.jda.api.entities.channel.concrete.Category c : guild.getCategories()) {
-            if (c.getName().equalsIgnoreCase("RBW System") || c.getName().equalsIgnoreCase("rbw system")) {
-                category = c;
-                break;
-            }
-        }
-        if (category == null) {
-            try {
-                category = guild.createCategory("RBW System").complete();
-            } catch (Exception ignored) {}
-        }
-        if (category == null) return;
+    /** Suggerisce i nomi delle mappe dove richiesto, es. `/config mapimage`. */
+    @Override
+    public void onCommandAutoCompleteInteraction(
+            @NotNull net.dv8tion.jda.api.events.interaction.command.CommandAutoCompleteInteractionEvent event) {
+        if (!event.getFocusedOption().getName().equals("mappa")) return;
 
-        boolean exists = false;
-        for (net.dv8tion.jda.api.entities.channel.concrete.VoiceChannel vc : category.getVoiceChannels()) {
-            if (vc.getName().toLowerCase().contains("community hangout") || vc.getName().toLowerCase().contains("hangout")) {
-                exists = true;
-                break;
-            }
+        String typed = event.getFocusedOption().getValue().toLowerCase();
+        List<net.dv8tion.jda.api.interactions.commands.Command.Choice> choices = new ArrayList<>();
+        for (com.rankedbot2.model.GameMap map : ctx.maps.all()) {
+            if (!map.name.toLowerCase().startsWith(typed)) continue;
+            choices.add(new net.dv8tion.jda.api.interactions.commands.Command.Choice(map.name, map.name));
+            if (choices.size() == 25) break;
         }
-
-        if (!exists) {
-            category.createVoiceChannel("Community Hangout")
-                    .addPermissionOverride(guild.getPublicRole(),
-                            java.util.EnumSet.of(net.dv8tion.jda.api.Permission.VIEW_CHANNEL, net.dv8tion.jda.api.Permission.VOICE_CONNECT, net.dv8tion.jda.api.Permission.VOICE_SPEAK),
-                            null)
-                    .queue(vc -> System.out.println("Canale Community Hangout creato in RBW System su " + guild.getName()),
-                            err -> {});
-        }
+        event.replyChoices(choices).queue(null, err -> {});
     }
 
     @Override
     public void onGuildVoiceUpdate(@NotNull GuildVoiceUpdateEvent event) {
         if (event.getMember().getUser().isBot()) return;
-        gameService.checkAllQueues(event.getGuild());
+        // Fuori dal thread eventi: il controllo legge il database e può annullare
+        // partite, e qui bloccherebbe tutti gli altri eventi del gateway.
+        ctx.monitor.execute(() -> gameService.checkAllQueues(event.getGuild()));
     }
 
     @Override
@@ -178,6 +169,11 @@ public class CommandListener extends ListenerAdapter {
             if (game != null && game.state != com.rankedbot2.model.Game.State.SCORED && game.state != com.rankedbot2.model.Game.State.VOIDED) {
                 String matchId = gameService.getCoralMcService().extractMatchId(raw);
                 if (matchId != null) {
+                    // Il recupero da CoralMC può richiedere qualche secondo: senza
+                    // un segnale immediato sembra che il bot abbia ignorato il link.
+                    event.getMessage().addReaction(net.dv8tion.jda.api.entities.emoji.Emoji.fromUnicode("⏳"))
+                            .queue(null, err -> {});
+
                     ctx.scheduler.execute(() -> {
                         synchronized (game) {
                             if (game.state == com.rankedbot2.model.Game.State.SCORED || game.state == com.rankedbot2.model.Game.State.VOIDED) {
@@ -185,6 +181,12 @@ public class CommandListener extends ListenerAdapter {
                             }
                         }
                         String err = gameService.autoScoreFromMatchLink(event.getGuild(), game, event.getAuthor().getId(), matchId);
+
+                        event.getMessage().removeReaction(net.dv8tion.jda.api.entities.emoji.Emoji.fromUnicode("⏳"))
+                                .queue(null, ignored -> {});
+                        event.getMessage().addReaction(net.dv8tion.jda.api.entities.emoji.Emoji.fromUnicode(err == null ? "✅" : "❌"))
+                                .queue(null, ignored -> {});
+
                         if (err != null) {
                             event.getChannel().sendMessageEmbeds(embeds.error(err)).queue();
                         }

@@ -124,8 +124,14 @@ public class CoralMcService {
      */
     public CoralMatchData fetchFinishedMatch(String input, int attempts, long delayMillis) throws Exception {
         CoralMatchData data = fetchMatchData(input);
+
+        // Attesa crescente: quasi sempre i dati sono già completi al primo colpo,
+        // e quando mancano bastano poche centinaia di ms. Un'attesa fissa lunga
+        // faceva pagare a tutti il caso peggiore.
+        long wait = 400;
         for (int i = 1; i < Math.max(1, attempts) && data.isOngoing(); i++) {
-            Thread.sleep(delayMillis);
+            Thread.sleep(Math.min(wait, delayMillis));
+            wait *= 2;
             data = fetchMatchData(input);
         }
         return data;

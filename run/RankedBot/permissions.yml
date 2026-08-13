@@ -1,12 +1,23 @@
 # Chi puo' usare quale comando.
-# Valori ammessi: "everyone", uno o piu' ID ruolo separati da virgola,
-# oppure vuoto per disabilitare del tutto il comando.
-# Il proprietario del server puo' sempre usare tutto.
 #
-# Livelli: Admin > Staff > Moderator > Helper.
-# Piu' un comando e' difficile da annullare, meno ruoli lo possono usare.
+# Valori ammessi:
+#   everyone            tutti i membri del server
+#   Admin, Moderator    uno o piu' NOMI di ruolo, separati da virgola
+#   1537120244122783845 uno o piu' ID ruolo (funzionano ancora)
+#   (vuoto)             comando disabilitato per tutti
+#
+# I nomi non fanno distinzione tra maiuscole e minuscole e sopravvivono alla
+# ricreazione dei ruoli, cosa che gli ID non fanno.
+# Il proprietario del server puo' sempre usare tutto, anche i comandi disabilitati.
+#
+# ATTENZIONE: un comando SENZA la sua riga qui e' disabilitato per tutti.
+# Se aggiorni il bot e compare un comando nuovo, aggiungilo anche qui.
+#
+# Gerarchia usata: Admin > Moderator > Helper > Scorer/Screensharer > giocatori.
 
-# Aperti a tutti i giocatori registrati
+#============================== TUTTI I GIOCATORI
+
+# Informazioni e profilo
 help: everyone
 info: everyone
 register: everyone
@@ -14,16 +25,27 @@ rename: everyone
 fix: everyone
 stats: everyone
 leaderboard: everyone
-transfergold: everyone
 theme: everyone
+transfergold: everyone
+
+# Consultazione partite e code
 queuestats: everyone
 gameinfo: everyone
 recap: everyone
-mecca: everyone
+queues: everyone
+ranks: everyone
+maps: everyone
+levels: everyone
+
+# Partita in corso: le usano i giocatori della partita
 pick: everyone
 submit: everyone
+autoscore: everyone
 void: everyone
 call: everyone
+mecca: everyone
+
+# Party
 partycreate: everyone
 partyinvite: everyone
 partyjoin: everyone
@@ -32,6 +54,8 @@ partylist: everyone
 partypromote: everyone
 partywarp: everyone
 partykick: everyone
+
+# Clan
 clancreate: everyone
 clandisband: everyone
 claninvite: everyone
@@ -45,46 +69,57 @@ clanlist: everyone
 clanlb: everyone
 cwregister: everyone
 cwunregister: everyone
-queues: everyone
-ranks: everyone
-maps: everyone
-levels: everyone
 
-# Scoring partite — Scorer, Staff, Admin
-score: 1537109077887557776,1537118680264212571,1537120244122783845
-undogame: 1537109077887557776,1537118680264212571,1537120244122783845
-win: 1537109077887557776,1537118680264212571,1537120244122783845
-lose: 1537109077887557776,1537118680264212571,1537120244122783845
+#============================== SCORER
 
-# Screenshare — Screensharer, Helper, Moderator, Staff, Admin
-screenshare: 1537109077203615805,1537120246379319408,1537120245557370960,1537118680264212571,1537120244122783845
+# Assegnare o correggere il risultato di una partita.
+# Sono reversibili con /undogame, ma spostano elo: non a tutti.
+score: Scorer, Helper, Moderator, Admin
+undogame: Scorer, Helper, Moderator, Admin
+win: Scorer, Moderator, Admin
+lose: Scorer, Moderator, Admin
 
-# Basso impatto (consultazione, annullare partite) — da Helper in su
-baninfo: 1537120246379319408,1537120245557370960,1537118680264212571,1537120244122783845
-forcevoid: 1537120246379319408,1537120245557370960,1537118680264212571,1537120244122783845
+#============================== SCREENSHARER
 
-# Moderazione (ban, strike) — Staff e Admin
-ban: 1537118680264212571,1537120244122783845
-unban: 1537118680264212571,1537120244122783845
-strike: 1537118680264212571,1537120244122783845
+screenshare: Screensharer, Helper, Moderator, Admin
 
-# Distruttivi e configurazione — solo Admin
-wipe: 1537120244122783845
-modify: 1537120244122783845
-forceregister: 1537120244122783845
-forcerename: 1537120244122783845
-clanforcedisband: 1537120244122783845
-cwcreate: 1537120244122783845
-cwcancel: 1537120244122783845
-cwstart: 1537120244122783845
-addqueue: 1537120244122783845
-deletequeue: 1537120244122783845
-addrank: 1537120244122783845
-deleterank: 1537120244122783845
-addmap: 1537120244122783845
-deletemap: 1537120244122783845
-givetheme: 1537120244122783845
-removetheme: 1537120244122783845
-addhangout: 1537120244122783845
-reloadconfig: 1537120244122783845
-savedata: 1537120244122783845
+#============================== HELPER
+
+# Basso impatto: consultare i ban e annullare una partita bloccata.
+baninfo: Helper, Moderator, Admin
+forcevoid: Helper, Moderator, Admin
+
+#============================== MODERATOR
+
+ban: Moderator, Admin
+unban: Moderator, Admin
+strike: Moderator, Admin
+clanforcedisband: Moderator, Admin
+
+#============================== ADMIN
+
+# Distruttivo: azzera le statistiche dei giocatori.
+wipe: Admin
+
+# Modificano dati o configurazione e non hanno un annulla.
+modify: Admin
+forceregister: Admin
+forcerename: Admin
+givetheme: Admin
+removetheme: Admin
+
+# Configurazione del bot
+addqueue: Admin
+deletequeue: Admin
+addrank: Admin
+deleterank: Admin
+addmap: Admin
+deletemap: Admin
+mapimage: Admin
+reloadconfig: Admin
+savedata: Admin
+
+# Clan war
+cwcreate: Admin
+cwcancel: Admin
+cwstart: Admin

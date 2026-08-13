@@ -110,6 +110,17 @@ party-invite-cmd: "/p invite"
 # Game channel deleting time after its scored (in seconds)
 game-deleting-time: 600
 
+# Se true, chi ha una partita non ancora scorata non puo' rientrare in coda.
+# Se false (default) rientrando in coda la vecchia partita viene annullata da
+# sola, cosi' una partita che nessuno scora non blocca piu' le queue.
+queue-blocks-unscored: false
+
+# Dopo quanti minuti una partita ferma in fase di picking viene annullata
+picking-timeout: 10
+
+# Dopo quanti minuti una partita iniziata e mai chiusa viene annullata
+abandoned-game-timeout: 120
+
 # How many screenshots do players have to attach when using =submit (for proof)
 submitting-attachments: 1
 

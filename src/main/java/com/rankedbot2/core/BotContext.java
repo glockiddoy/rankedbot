@@ -24,7 +24,7 @@ import java.util.concurrent.ScheduledExecutorService;
 /** Stato condiviso passato a tutti i comandi. */
 public class BotContext {
 
-    public static final String VERSION = "2.0.0";
+    public static final String VERSION = "2.8.0";
 
     public final File dataFolder;
     public final Config config;
@@ -50,6 +50,13 @@ public class BotContext {
 
     /** Esegue anche la creazione partite, che fa chiamate REST bloccanti. */
     public final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(4);
+
+    /**
+     * Thread separato per il controllo periodico delle code: se girasse su
+     * `scheduler` una creazione partita lenta o un autoscore in attesa di
+     * CoralMC potrebbe occupare tutti i thread e fermare la scansione.
+     */
+    public final ScheduledExecutorService monitor = Executors.newSingleThreadScheduledExecutor();
 
     private JDA jda;
 
@@ -99,6 +106,7 @@ public class BotContext {
     }
 
     public void shutdown() {
+        monitor.shutdownNow();
         scheduler.shutdownNow();
         database.close();
     }

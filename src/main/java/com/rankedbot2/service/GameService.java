@@ -44,6 +44,10 @@ public class GameService {
     private final Set<String> creating = Collections.synchronizedSet(new HashSet<>());
     /** Partite con un autoscore in corso: due link incollati insieme non devono scorare due volte. */
     private final Set<Integer> autoScoring = Collections.synchronizedSet(new HashSet<>());
+    /** Ultimo motivo stampato per ogni coda, per non ripetere lo stesso log ogni scansione. */
+    private final Map<String, String> lastQueueReport = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final long SWEEP_INTERVAL_MILLIS = 30_000;
+    private volatile long lastSweep;
 
     public GameService(BotContext ctx, PlayerService playerService, Embeds embeds, CoralMcService coralMcService) {
         this.ctx = ctx;
@@ -63,10 +67,43 @@ public class GameService {
 
     public void checkAllQueues(Guild guild) {
         if (guild == null) return;
+
+        // Le due pulizie leggono tutte le partite: a ogni scansione sarebbero
+        // decine di query al minuto per un lavoro che non ha fretta.
+        long now = System.currentTimeMillis();
+        if (now - lastSweep > SWEEP_INTERVAL_MILLIS) {
+            lastSweep = now;
+            releaseAbandonedGames(guild);
+            cleanupFinishedGames(guild);
+        }
         for (GameQueue queue : ctx.queues.all()) {
-            if (creating.add(queue.vcId)) {
-                ctx.scheduler.execute(() -> buildGameIfReady(guild, queue));
-            }
+            if (creating.add(queue.vcId)) submit(guild, queue);
+        }
+    }
+
+    /**
+     * Chiude le partite rimaste appese. Finché una partita risulta attiva i suoi
+     * giocatori non possono entrare in una nuova coda: senza questa pulizia una
+     * partita abbandonata blocca la queue per sempre.
+     */
+    private void releaseAbandonedGames(Guild guild) {
+        long now = System.currentTimeMillis();
+        long pickingTimeout = ctx.config.getInt("picking-timeout", 10) * 60_000L;
+        long gameTimeout = ctx.config.getInt("abandoned-game-timeout", 120) * 60_000L;
+
+        for (Game game : ctx.games.active()) {
+            boolean channelGone = game.textChannel == null || game.textChannel.isBlank()
+                    || textChannelOrNull(guild, game.textChannel) == null;
+            long age = now - game.createdAt;
+            boolean pickingExpired = game.state == Game.State.PICKING && age > pickingTimeout;
+            boolean gameExpired = age > gameTimeout;
+
+            if (!channelGone && !pickingExpired && !gameExpired) continue;
+
+            String reason = channelGone ? "canale eliminato"
+                    : pickingExpired ? "picking scaduto" : "partita abbandonata";
+            System.out.println("[queue] partita #" + game.number + " annullata: " + reason);
+            voidGame(guild, game);
         }
     }
 
@@ -80,29 +117,144 @@ public class GameService {
         if (queue == null) return;
         if (!creating.add(queue.vcId)) return;
 
-        ctx.scheduler.execute(() -> buildGameIfReady(guild, queue));
+        submit(guild, queue);
+    }
+
+    /**
+     * Accoda il controllo di una coda. Se l'esecutore rifiuta il task va tolto
+     * subito il segnaposto: restando lì quella coda non verrebbe più controllata
+     * per il resto della vita del bot.
+     */
+    private void submit(Guild guild, GameQueue queue) {
+        try {
+            ctx.scheduler.execute(() -> buildGameIfReady(guild, queue));
+        } catch (RuntimeException e) {
+            creating.remove(queue.vcId);
+        }
     }
 
     private void buildGameIfReady(Guild guild, GameQueue queue) {
         try {
             VoiceChannel vc = guild.getVoiceChannelById(queue.vcId);
-            if (vc == null) return;
-
-            List<Member> present = new ArrayList<>();
-            for (Member m : vc.getMembers()) {
-                if (m.getUser().isBot()) continue;
-                Player p = ctx.players.get(m.getId());
-                if (p == null || p.isBanned()) continue;
-                if (ctx.games.activeGameOf(m.getId()) != null) continue;
-                present.add(m);
+            if (vc == null) {
+                report(queue.vcId, "[queue] coda " + queue.vcId + ": canale vocale non trovato");
+                return;
             }
 
-            if (present.size() < queue.totalPlayers()) return;
-            createGame(guild, queue, present.subList(0, queue.totalPlayers()));
+            // Chi torna in coda con una partita mai scorata la abbandona: tenerla
+            // aperta bloccherebbe lui e tutti gli altri della sua partita.
+            List<Game> activeGames = ctx.games.active();
+            if (!ctx.config.getBoolean("queue-blocks-unscored", false)
+                    && freeUnscoredGamesOf(guild, vc, activeGames)) {
+                activeGames = ctx.games.active();
+            }
+
+            Eligibility eligibility = eligibilityOf(vc, activeGames);
+            List<Member> present = eligibility.ready;
+
+            if (present.size() < queue.totalPlayers()) {
+                report(queue.vcId, "[queue] " + vc.getName() + ": " + present.size() + "/"
+                        + queue.totalPlayers() + " pronti"
+                        + (eligibility.blocked.isEmpty() ? "" : " — esclusi: "
+                        + String.join(", ", eligibility.blocked)));
+                return;
+            }
+
+            report(queue.vcId, null);
+            createGame(guild, queue, new ArrayList<>(present.subList(0, queue.totalPlayers())));
         } catch (Exception e) {
             System.err.println("Errore creazione partita: " + e.getMessage());
+            e.printStackTrace();
         } finally {
             creating.remove(queue.vcId);
+        }
+    }
+
+    /**
+     * Annulla le partite non scorate dei giocatori che sono rientrati in coda.
+     * Una partita in PICKING resta intoccata: lì la scelta dei team è in corso e
+     * il vocale di coda è ancora quello dove stanno aspettando.
+     */
+    private boolean freeUnscoredGamesOf(Guild guild, VoiceChannel vc, List<Game> activeGames) {
+        Set<Integer> handled = new HashSet<>();
+
+        for (Member m : vc.getMembers()) {
+            if (m.getUser().isBot()) continue;
+
+            Game active = activeGameIn(activeGames, m.getId());
+            if (active == null || active.state == Game.State.PICKING) continue;
+            if (!handled.add(active.number)) continue;
+
+            System.out.println("[queue] partita #" + active.number
+                    + " annullata: " + m.getEffectiveName() + " è rientrato in coda senza scorarla");
+            voidGame(guild, active);
+        }
+        return !handled.isEmpty();
+    }
+
+    /** Chi in un vocale di coda può giocare e chi no, con il motivo. */
+    public static class Eligibility {
+        public final List<Member> ready = new ArrayList<>();
+        public final List<String> blocked = new ArrayList<>();
+    }
+
+    /**
+     * Partita attiva di un giocatore cercata in una lista già caricata.
+     * Chiedere al database una volta per giocatore significava rileggere tutte
+     * le partite attive otto volte per coda, ogni tre secondi.
+     */
+    private Game activeGameIn(List<Game> activeGames, String userId) {
+        for (Game g : activeGames) {
+            if (g.allPlayers().contains(userId)) return g;
+        }
+        return null;
+    }
+
+    /**
+     * Filtro usato sia per far partire le partite sia da /queuestats: il comando
+     * deve mostrare esattamente ciò che vede il bot, altrimenti non serve a nulla.
+     */
+    public Eligibility eligibilityOf(VoiceChannel vc) {
+        return eligibilityOf(vc, ctx.games.active());
+    }
+
+    public Eligibility eligibilityOf(VoiceChannel vc, List<Game> activeGames) {
+        Eligibility out = new Eligibility();
+        if (vc == null) return out;
+
+        for (Member m : vc.getMembers()) {
+            if (m.getUser().isBot()) continue;
+
+            Player p = ctx.players.get(m.getId());
+            if (p == null) {
+                out.blocked.add(m.getEffectiveName() + " (non registrato)");
+                continue;
+            }
+            if (p.isBanned()) {
+                out.blocked.add(m.getEffectiveName() + " (bannato)");
+                continue;
+            }
+            Game active = activeGameIn(activeGames, m.getId());
+            if (active != null) {
+                out.blocked.add(m.getEffectiveName() + " (già nella partita #" + active.number + ")");
+                continue;
+            }
+            out.ready.add(m);
+        }
+        return out;
+    }
+
+    /**
+     * Stampa il motivo per cui una coda non parte, ma solo quando cambia: il
+     * controllo gira ogni pochi secondi e altrimenti riempirebbe il log.
+     */
+    private void report(String queueId, String message) {
+        if (message == null) {
+            lastQueueReport.remove(queueId);
+            return;
+        }
+        if (!message.equals(lastQueueReport.put(queueId, message))) {
+            System.out.println(message);
         }
     }
 
@@ -174,7 +326,7 @@ public class GameService {
 
         if (!needsPicking) {
             moveTeamsToVcs(guild, game);
-            textChannel.sendMessageEmbeds(gameStartedEmbed(guild, game)).queue();
+            sendGameStart(textChannel, guild, game);
             announceGame(guild, game);
         } else {
             for (String id : ids) {
@@ -343,8 +495,8 @@ public class GameService {
             game.state = Game.State.STARTED;
             ctx.games.save(game);
             moveTeamsToVcs(guild, game);
-            TextChannel channel = guild.getTextChannelById(game.textChannel);
-            if (channel != null) channel.sendMessageEmbeds(gameStartedEmbed(guild, game)).queue();
+            TextChannel channel = textChannelOrNull(guild, game.textChannel);
+            sendGameStart(channel, guild, game);
             announceGame(guild, game);
         } else {
             ctx.games.save(game);
@@ -369,8 +521,8 @@ public class GameService {
     }
 
     public void setupVcPermissions(Guild guild, Game game) {
-        VoiceChannel vc1 = guild.getVoiceChannelById(game.vc1);
-        VoiceChannel vc2 = guild.getVoiceChannelById(game.vc2);
+        VoiceChannel vc1 = voiceChannelOrNull(guild, game.vc1);
+        VoiceChannel vc2 = voiceChannelOrNull(guild, game.vc2);
         if (vc1 == null || vc2 == null) return;
 
         List<Role> staffRoles = getStaffRoles(guild);
@@ -440,8 +592,8 @@ public class GameService {
 
     private void moveTeamsToVcs(Guild guild, Game game) {
         setupVcPermissions(guild, game);
-        VoiceChannel vc1 = guild.getVoiceChannelById(game.vc1);
-        VoiceChannel vc2 = guild.getVoiceChannelById(game.vc2);
+        VoiceChannel vc1 = voiceChannelOrNull(guild, game.vc1);
+        VoiceChannel vc2 = voiceChannelOrNull(guild, game.vc2);
         moveAll(guild, game.team1, vc1);
         moveAll(guild, game.team2, vc2);
     }
@@ -505,7 +657,81 @@ public class GameService {
         long channelId = ctx.config.getId("games-announcing");
         if (channelId == 0) return;
         TextChannel channel = guild.getTextChannelById(channelId);
-        if (channel != null) channel.sendMessageEmbeds(gameStartedEmbed(guild, game)).queue();
+        if (channel != null) sendGameStart(channel, guild, game);
+    }
+
+    /**
+     * Manda il messaggio di inizio partita con l'immagine dei due team. Se il
+     * disegno fallisce parte comunque il solo embed: la partita è già creata e
+     * i giocatori devono vedere le squadre.
+     */
+    public void sendGameStart(TextChannel channel, Guild guild, Game game) {
+        if (channel == null) return;
+
+        byte[] banner = renderStartBanner(game);
+        EmbedBuilder eb = embeds.builder()
+                .setTitle("⚔️ PARTITA #" + game.number + " — " + game.modeName().toUpperCase())
+                .setDescription("🎮 **Partita iniziata!** Buona fortuna a entrambi i team.");
+
+        if (!game.map.isEmpty()) {
+            GameMap map = ctx.maps.get(game.map);
+            String mapName = game.map.substring(0, 1).toUpperCase() + game.map.substring(1).toLowerCase();
+            eb.addField("🗺️ Mappa", "**" + mapName + "**"
+                    + (map != null && map.height > 0 ? " · altezza build `" + map.height + "`" : ""), true);
+        }
+
+        String partyCmd = ctx.config.getString("party-invite-cmd", "/p invite");
+        if (!partyCmd.isEmpty()) eb.addField("📌 Party", "`" + partyCmd + " <nome>`", true);
+
+        if (game.casual) {
+            eb.addField("🎮 Modalità", "Casual — nessun ELO in palio", false);
+        } else {
+            eb.addField("⚡ Come si chiude",
+                    "Incolla il **link CoralMC** in questo canale: lo scoring è automatico.", false);
+        }
+
+        // Con l'immagine i roster sono già leggibili: ripeterli nell'embed
+        // raddoppierebbe l'altezza del messaggio per niente.
+        if (banner == null) {
+            eb.addField("🔴 Team 1", listPlayers(game.team1), true);
+            eb.addField("🔵 Team 2", listPlayers(game.team2), true);
+            channel.sendMessageEmbeds(eb.build()).queue();
+            return;
+        }
+
+        eb.setImage("attachment://start.png");
+        channel.sendMessageEmbeds(eb.build())
+                .addFiles(FileUpload.fromData(banner, "start.png"))
+                .queue();
+    }
+
+    private byte[] renderStartBanner(Game game) {
+        try {
+            String subtitle = "PARTITA #" + game.number + " · " + game.modeName().toUpperCase();
+            return scoreImages.renderGameStart(mapStyle(game), subtitle,
+                    startEntries(game, game.team1, game.captain1),
+                    startEntries(game, game.team2, game.captain2));
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
+        }
+    }
+
+    /** Nome e colori dei letti della mappa, per lo sfondo generato. */
+    private ScoreImageService.MapStyle mapStyle(Game game) {
+        GameMap map = game.map.isEmpty() ? null : ctx.maps.get(game.map);
+        if (map == null) return ScoreImageService.MapStyle.of(game.map);
+        return new ScoreImageService.MapStyle(map.name, map.team1, map.team2);
+    }
+
+    private List<ScoreImageService.Entry> startEntries(Game game, List<String> ids, String captainId) {
+        List<ScoreImageService.Entry> entries = new ArrayList<>();
+        for (String id : ids) {
+            Player p = ctx.players.get(id);
+            if (p == null) continue;
+            entries.add(ScoreImageService.Entry.atStart(p.ign, p.elo, id.equals(captainId)));
+        }
+        return entries;
     }
 
     /** Registra il submit e avvisa gli scorer. */
@@ -514,7 +740,7 @@ public class GameService {
         ctx.games.save(game);
 
         long scorerRole = ctx.config.getId("scorer-role");
-        TextChannel channel = guild.getTextChannelById(game.textChannel);
+        TextChannel channel = textChannelOrNull(guild, game.textChannel);
         if (channel == null) return;
 
         EmbedBuilder eb = embeds.base(embeds.successColor())
@@ -540,6 +766,15 @@ public class GameService {
         List<String> winners = winningTeam == 1 ? game.team1 : game.team2;
         List<String> losers = winningTeam == 1 ? game.team2 : game.team1;
 
+        // L'autoscore può assegnare più MVP (letto rotto + top kills), quindi qui
+        // arriva una lista di id separati da virgola, non un id singolo.
+        Set<String> mvpIds = new HashSet<>();
+        if (mvpId != null) {
+            for (String id : mvpId.split(",")) {
+                if (!id.isBlank()) mvpIds.add(id.trim());
+            }
+        }
+
         game.eloChanges.clear();
 
         int winXp = ctx.config.getInt("win-xp", 0);
@@ -560,7 +795,7 @@ public class GameService {
             p.winstreak++;
             p.lossstreak = 0;
             if (p.winstreak > p.highestWs) p.highestWs = p.winstreak;
-            if (id.equals(mvpId)) p.mvp++;
+            if (mvpIds.contains(id)) p.mvp++;
 
             playerService.addXp(p, winXp + playXp);
             addClanXp(p, clanXpWin + clanXpPlay);
@@ -581,6 +816,8 @@ public class GameService {
             p.lossstreak++;
             p.winstreak = 0;
             if (p.lossstreak > p.highestLs) p.highestLs = p.lossstreak;
+            // Il top kills può stare nel team perdente.
+            if (mvpIds.contains(id)) p.mvp++;
 
             playerService.addXp(p, playXp);
             addClanXp(p, clanXpPlay);
@@ -598,6 +835,7 @@ public class GameService {
         game.mvp = mvpId == null ? "" : mvpId;
         game.scoredBy = scorerId;
         game.state = Game.State.SCORED;
+        game.endedAt = System.currentTimeMillis();
         ctx.games.save(game);
 
         applyClanWarResult(game, winningTeam);
@@ -635,12 +873,14 @@ public class GameService {
         if (game.state == Game.State.VOIDED) return "Questa partita è stata annullata";
         if (game.casual) return ctx.msg("casual-game");
 
+        long startedAt = System.currentTimeMillis();
         CoralMcService.CoralMatchData matchData;
         try {
-            matchData = coralMcService.fetchFinishedMatch(matchId, 4, 4000);
+            matchData = coralMcService.fetchFinishedMatch(matchId, 5, 3000);
         } catch (Exception e) {
             return "Errore recupero partita CoralMC: " + e.getMessage();
         }
+        long fetchMillis = System.currentTimeMillis() - startedAt;
 
         if (matchData.perPlayerStats.isEmpty()) {
             return "Nessuna statistica giocatore trovata nel match su CoralMC";
@@ -683,7 +923,7 @@ public class GameService {
                     + matchData.winningTeamName + "`).";
         }
 
-        List<String> mvps = calculateMvps(game, matchData, igns);
+        List<String> mvps = calculateMvps(game, matchData, igns, winningTeam);
         game.mvp = String.join(",", mvps);
 
         if ((game.map == null || game.map.isBlank()) && matchData.arenaName != null && !matchData.arenaName.isBlank()) {
@@ -693,17 +933,22 @@ public class GameService {
         String scoreErr = score(guild, game, submitterId, winningTeam, game.mvp);
         if (scoreErr != null) return scoreErr;
 
-        applyMatchStats(game, matchData, igns, mvps);
+        applyMatchStats(game, matchData, igns);
         game.coralMatch = matchData.matchId;
         ctx.games.save(game);
 
         sendAutoScoreDetails(guild, game, matchData, winningTeam, igns);
+
+        System.out.println("[autoscore] partita #" + game.number + " completata in "
+                + (System.currentTimeMillis() - startedAt) + " ms (di cui "
+                + fetchMillis + " ms di attesa CoralMC)");
         return null;
     }
 
     /**
-     * Team vincitore: il nome del team su CoralMC è la fonte autorevole, il
-     * conteggio degli esiti serve solo se quel campo non è utilizzabile.
+     * Team vincitore, guardando solo i giocatori della partita. Su CoralMC serve
+     * un host per aprire il game: quello sta spesso in un team suo (giallo o blu)
+     * e non deve pesare sul risultato, né entrare nell'elo o negli MVP.
      */
     private int winningTeamOf(Game game, CoralMcService.CoralMatchData matchData, Map<String, String> igns) {
         for (CoralMcService.CoralPlayerStats ps : matchData.perPlayerStats) {
@@ -715,6 +960,8 @@ public class GameService {
             }
         }
 
+        // Il team indicato come vincitore non contiene nessuno della partita:
+        // è quello dell'host. Si guarda allora l'esito dei soli giocatori veri.
         int team1Wins = 0;
         int team2Wins = 0;
         for (CoralMcService.CoralPlayerStats ps : matchData.perPlayerStats) {
@@ -726,49 +973,77 @@ public class GameService {
         }
         if (team1Wins > team2Wins) return 1;
         if (team2Wins > team1Wins) return 2;
+
+        // Nessun giocatore della partita risulta vincitore (ha vinto l'host, o
+        // il game è finito male): decide chi ha rotto il letto avversario.
+        int team1Beds = bedsBrokenBy(game.team1, matchData);
+        int team2Beds = bedsBrokenBy(game.team2, matchData);
+        if (team1Beds > team2Beds) return 1;
+        if (team2Beds > team1Beds) return 2;
         return 0;
     }
+
+    private int bedsBrokenBy(List<String> ids, CoralMcService.CoralMatchData matchData) {
+        int total = 0;
+        for (String id : ids) {
+            Player p = ctx.players.get(id);
+            if (p == null) continue;
+            CoralMcService.CoralPlayerStats ps = matchData.byUsername(p.ign);
+            if (ps != null) total += ps.bedsBroken;
+        }
+        return total;
+    }
+
 
     /**
      * Calcola gli MVP del match:
      * 1. 1 MVP al giocatore che ha distrutto il letto (bedsBroken > 0).
      * 2. 1 MVP al giocatore che ha fatto più kill regolari (kills) nel game.
      */
-    private List<String> calculateMvps(Game game, CoralMcService.CoralMatchData matchData, Map<String, String> igns) {
+    /**
+     * Al massimo due MVP, entrambi tra i vincitori: chi ha rotto più letti e chi
+     * ha fatto più kill. Premiare chiunque avesse un letto o fosse pari al top
+     * kill produceva tre MVP su quattro giocatori, uno dei quali sconfitto.
+     */
+    private List<String> calculateMvps(Game game, CoralMcService.CoralMatchData matchData,
+                                       Map<String, String> igns, int winningTeam) {
+        List<String> winners = winningTeam == 1 ? game.team1 : game.team2;
+
+        String bedMvp = null;
+        String killMvp = null;
+        int bestBeds = 0;
+        int bestKills = 0;
+
+        for (String id : winners) {
+            Player p = ctx.players.get(id);
+            if (p == null) continue;
+            CoralMcService.CoralPlayerStats ps = matchData.byUsername(p.ign);
+            if (ps == null) continue;
+
+            if (ps.bedsBroken > bestBeds) {
+                bestBeds = ps.bedsBroken;
+                bedMvp = id;
+            }
+            int kills = ps.kills + ps.finalKills;
+            if (kills > bestKills) {
+                bestKills = kills;
+                killMvp = id;
+            }
+        }
+
         Set<String> mvps = new LinkedHashSet<>();
-
-        for (CoralMcService.CoralPlayerStats ps : matchData.perPlayerStats) {
-            if (ps.bedsBroken > 0) {
-                String id = igns.get(ps.username.toLowerCase());
-                if (id != null) mvps.add(id);
-            }
-        }
-
-        int maxKills = -1;
-        for (CoralMcService.CoralPlayerStats ps : matchData.perPlayerStats) {
-            if (ps.kills > maxKills) maxKills = ps.kills;
-        }
-
-        if (maxKills > 0) {
-            for (CoralMcService.CoralPlayerStats ps : matchData.perPlayerStats) {
-                if (ps.kills == maxKills) {
-                    String id = igns.get(ps.username.toLowerCase());
-                    if (id != null) mvps.add(id);
-                }
-            }
-        }
-
+        if (bedMvp != null) mvps.add(bedMvp);
+        if (killMvp != null) mvps.add(killMvp);
         return new ArrayList<>(mvps);
     }
 
-    private void applyMatchStats(Game game, CoralMcService.CoralMatchData matchData, Map<String, String> igns, List<String> mvps) {
+    /**
+     * Somma kill e morti del match. Il contatore MVP non si tocca qui: lo
+     * assegna score(), altrimenti verrebbe contato due volte.
+     */
+    private void applyMatchStats(Game game, CoralMcService.CoralMatchData matchData, Map<String, String> igns) {
         game.killChanges.clear();
         game.deathChanges.clear();
-
-        int maxKills = -1;
-        for (CoralMcService.CoralPlayerStats ps : matchData.perPlayerStats) {
-            if (ps.kills > maxKills) maxKills = ps.kills;
-        }
 
         for (CoralMcService.CoralPlayerStats ps : matchData.perPlayerStats) {
             String id = igns.get(ps.username.toLowerCase());
@@ -779,14 +1054,6 @@ public class GameService {
             int totalKills = ps.kills + ps.finalKills;
             p.kills += totalKills;
             p.deaths += ps.deaths;
-
-            if (ps.bedsBroken > 0) {
-                p.mvp += 1;
-            }
-            if (maxKills > 0 && ps.kills == maxKills) {
-                p.mvp += 1;
-            }
-
             ctx.players.save(p);
 
             game.killChanges.put(id, totalKills);
@@ -796,7 +1063,7 @@ public class GameService {
 
     private void sendAutoScoreDetails(Guild guild, Game game, CoralMcService.CoralMatchData matchData,
                                       int winningTeam, Map<String, String> igns) {
-        TextChannel channel = guild.getTextChannelById(game.textChannel);
+        TextChannel channel = textChannelOrNull(guild, game.textChannel);
         if (channel == null) return;
 
         EmbedBuilder eb = embeds.base(embeds.successColor())
@@ -813,32 +1080,24 @@ public class GameService {
         eb.addField("Sconfitti (Team " + (winningTeam == 1 ? 2 : 1) + ")",
                 listPlayers(winningTeam == 1 ? game.team2 : game.team1), false);
 
+        // Gli MVP sono quelli già decisi da calculateMvps: ricalcolarli qui
+        // sul totale dei giocatori includeva anche l'host del game.
         StringBuilder mvpInfo = new StringBuilder();
-        for (CoralMcService.CoralPlayerStats ps : matchData.perPlayerStats) {
-            String id = igns.get(ps.username.toLowerCase());
-            if (id == null) continue;
-            if (ps.bedsBroken > 0) {
-                mvpInfo.append("🛌 **Bed MVP**: ").append(mention(id)).append(" (`").append(ps.username).append("` - ").append(ps.bedsBroken).append(" letto/i)\n");
-            }
-        }
+        for (String id : game.mvpIds()) {
+            Player p = ctx.players.get(id);
+            if (p == null) continue;
+            CoralMcService.CoralPlayerStats ps = matchData.byUsername(p.ign);
+            if (ps == null) continue;
 
-        int maxKills = -1;
-        for (CoralMcService.CoralPlayerStats ps : matchData.perPlayerStats) {
-            if (ps.kills > maxKills) maxKills = ps.kills;
-        }
-        if (maxKills > 0) {
-            for (CoralMcService.CoralPlayerStats ps : matchData.perPlayerStats) {
-                if (ps.kills == maxKills) {
-                    String id = igns.get(ps.username.toLowerCase());
-                    if (id != null) {
-                        mvpInfo.append("⚔️ **Top Kills MVP**: ").append(mention(id)).append(" (`").append(ps.username).append("` - ").append(ps.kills).append(" Kills regolari)\n");
-                    }
-                }
-            }
+            mvpInfo.append(ps.bedsBroken > 0 ? "🛌 " : "⚔️ ")
+                    .append(mention(id))
+                    .append(" — ").append(ps.kills + ps.finalKills).append(" kill");
+            if (ps.bedsBroken > 0) mvpInfo.append(", ").append(ps.bedsBroken).append(" letti");
+            mvpInfo.append('\n');
         }
 
         if (mvpInfo.length() > 0) {
-            eb.addField("⭐ MVP della Partita", mvpInfo.toString(), false);
+            eb.addField("⭐ MVP", mvpInfo.toString(), false);
         }
 
         StringBuilder stats = new StringBuilder();
@@ -904,13 +1163,26 @@ public class GameService {
         TextChannel channel = guild.getTextChannelById(channelId);
         if (channel == null) return;
 
-        EmbedBuilder eb = embeds.base(embeds.successColor())
-                .setTitle("Partita #" + game.number + " scorata")
-                .addField("Vincitori", listPlayers(game.winner == 1 ? game.team1 : game.team2), true)
-                .addField("Sconfitti", listPlayers(game.winner == 1 ? game.team2 : game.team1), true);
-        if (!game.mvp.isEmpty()) eb.addField("MVP", mention(game.mvp), false);
+        List<String> winners = game.winner == 1 ? game.team1 : game.team2;
+        List<String> losers = game.winner == 1 ? game.team2 : game.team1;
+        List<String> mvps = game.mvpIds();
 
         byte[] banner = renderScoreBanner(game);
+        EmbedBuilder eb = embeds.base(embeds.successColor())
+                .setTitle("🏆 Partita #" + game.number + " — " + game.modeName().toUpperCase());
+
+        // Con l'immagine elo e variazioni sono già lì: nell'embed bastano le
+        // menzioni, altrimenti ogni nome va a capo e il messaggio raddoppia.
+        if (banner != null) {
+            eb.addField("🏆 Vincitori", mentions(winners), true);
+            eb.addField("💀 Sconfitti", mentions(losers), true);
+        } else {
+            eb.addField("🏆 Vincitori", listPlayers(winners), true);
+            eb.addField("💀 Sconfitti", listPlayers(losers), true);
+        }
+
+        if (!mvps.isEmpty()) eb.addField("⭐ MVP", mentions(mvps), false);
+
         if (banner != null) {
             eb.setImage("attachment://recap.png");
             channel.sendMessageEmbeds(eb.build())
@@ -921,6 +1193,14 @@ public class GameService {
         }
     }
 
+    /** Solo le menzioni, una per riga. */
+    private String mentions(List<String> ids) {
+        if (ids.isEmpty()) return "—";
+        StringBuilder sb = new StringBuilder();
+        for (String id : ids) sb.append(mention(id)).append('\n');
+        return sb.toString();
+    }
+
     private List<ScoreImageService.Entry> buildEntries(Game game, List<String> playerIds) {
         List<ScoreImageService.Entry> entries = new ArrayList<>();
         for (String id : playerIds) {
@@ -929,7 +1209,7 @@ public class GameService {
             int change = game.eloChanges.getOrDefault(id, 0);
             int currentElo = p.elo;
             int prevElo = currentElo - change;
-            boolean isMvp = id.equals(game.mvp);
+            boolean isMvp = game.isMvp(id);
             entries.add(new ScoreImageService.Entry(p.ign, prevElo, currentElo, change, isMvp));
         }
         return entries;
@@ -941,7 +1221,7 @@ public class GameService {
             List<String> losers = game.winner == 1 ? game.team2 : game.team1;
             var winEntries = buildEntries(game, winners);
             var lossEntries = buildEntries(game, losers);
-            return scoreImages.render(game.map, winEntries, lossEntries);
+            return scoreImages.render(mapStyle(game), winEntries, lossEntries);
         } catch (Exception e) {
             e.printStackTrace();
             return null;
@@ -951,9 +1231,10 @@ public class GameService {
     /** Annulla una partita non scorata. */
     public void voidGame(Guild guild, Game game) {
         game.state = Game.State.VOIDED;
+        game.endedAt = System.currentTimeMillis();
         ctx.games.save(game);
 
-        TextChannel channel = guild.getTextChannelById(game.textChannel);
+        TextChannel channel = textChannelOrNull(guild, game.textChannel);
         if (channel != null) {
             channel.sendMessageEmbeds(embeds.error("Partita #" + game.number + " annullata.")).queue();
         }
@@ -977,11 +1258,11 @@ public class GameService {
             if (winners.contains(p.id)) {
                 p.wins = Math.max(0, p.wins - 1);
                 p.winstreak = Math.max(0, p.winstreak - 1);
-                if (game.mvp != null && game.mvp.contains(p.id)) p.mvp = Math.max(0, p.mvp - 1);
             } else if (losers.contains(p.id)) {
                 p.losses = Math.max(0, p.losses - 1);
                 p.lossstreak = Math.max(0, p.lossstreak - 1);
             }
+            if (game.isMvp(p.id)) p.mvp = Math.max(0, p.mvp - 1);
 
             Integer killAdd = game.killChanges.get(p.id);
             if (killAdd != null && killAdd > 0) p.kills = Math.max(0, p.kills - killAdd);
@@ -1012,11 +1293,59 @@ public class GameService {
     /** Cancella canali e vocali della partita dopo il tempo configurato (default 10s). */
     public void scheduleCleanup(Guild guild, Game game) {
         int seconds = ctx.config.getInt("game-deleting-time", 10);
-        ctx.scheduler.schedule(() -> {
-            deleteChannel(guild.getTextChannelById(game.textChannel));
-            deleteChannel(guild.getVoiceChannelById(game.vc1));
-            deleteChannel(guild.getVoiceChannelById(game.vc2));
-        }, Math.max(1, seconds), TimeUnit.SECONDS);
+        ctx.scheduler.schedule(() -> deleteGameChannels(guild, game.number),
+                Math.max(1, seconds), TimeUnit.SECONDS);
+    }
+
+    /**
+     * Elimina i canali delle partite già concluse. Il timer di scheduleCleanup
+     * vive solo in memoria: se il bot si riavvia prima che scatti, i canali
+     * resterebbero lì per sempre. Questa passata gira col controllo code.
+     */
+    private void cleanupFinishedGames(Guild guild) {
+        long delay = ctx.config.getInt("game-deleting-time", 10) * 1000L;
+        long now = System.currentTimeMillis();
+
+        for (Game game : ctx.games.withChannelsToDelete()) {
+            // endedAt = 0 sono partite chiuse da versioni precedenti: si puliscono subito.
+            if (game.endedAt > 0 && now - game.endedAt < delay) continue;
+            deleteGameChannels(guild, game.number);
+        }
+    }
+
+    /** Cancella canale testuale e vocali della partita e li dimentica nel database. */
+    private void deleteGameChannels(Guild guild, int gameNumber) {
+        Game game = ctx.games.get(gameNumber);
+        if (game == null) return;
+
+        deleteChannel(textChannelOrNull(guild, game.textChannel));
+        deleteChannel(voiceChannelOrNull(guild, game.vc1));
+        deleteChannel(voiceChannelOrNull(guild, game.vc2));
+
+        // Svuotare gli id evita di riprovare la cancellazione a ogni passata.
+        game.textChannel = "";
+        game.vc1 = "";
+        game.vc2 = "";
+        ctx.games.save(game);
+    }
+
+    /** getXChannelById esplode con un id vuoto, e i canali già puliti lo sono. */
+    private TextChannel textChannelOrNull(Guild guild, String id) {
+        if (id == null || id.isBlank()) return null;
+        try {
+            return guild.getTextChannelById(id);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private VoiceChannel voiceChannelOrNull(Guild guild, String id) {
+        if (id == null || id.isBlank()) return null;
+        try {
+            return guild.getVoiceChannelById(id);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private void deleteChannel(net.dv8tion.jda.api.entities.channel.attribute.ICategorizableChannel channel) {

@@ -109,6 +109,23 @@ public class GameCommands extends CommandBase {
         }
     }
 
+    /**
+     * Discord rifiuta l'intero messaggio se un campo supera il limite: con molte
+     * persone in un vocale la lista degli esclusi ci arriva davvero.
+     */
+    private static String truncate(String text, int max) {
+        if (text == null || text.isEmpty()) return "—";
+        return text.length() <= max ? text : text.substring(0, max - 1) + "…";
+    }
+
+    /** Il campo mvp può contenere più id: mention(game.mvp) darebbe "<@a,b>". */
+    private static String mentionAll(List<String> ids) {
+        if (ids.isEmpty()) return "—";
+        StringBuilder sb = new StringBuilder();
+        for (String id : ids) sb.append(GameService.mention(id)).append('\n');
+        return sb.toString();
+    }
+
     private Game gameOfChannel(SlashCommandInteractionEvent e) {
         return ctx.games.getByChannel(e.getChannel().getId());
     }
@@ -151,13 +168,7 @@ public class GameCommands extends CommandBase {
 
         OptionMapping linkOption = e.getOption("link");
         if (linkOption != null && !linkOption.getAsString().isBlank()) {
-            e.deferReply().queue();
-            String err = gameService.autoScoreFromMatchLink(guild(e), game, e.getUser().getId(), linkOption.getAsString());
-            if (err != null) {
-                fail(e, err);
-            } else {
-                ok(e, "Autoscore della partita #" + game.number + " eseguito con successo!");
-            }
+            runAutoScore(e, game, linkOption.getAsString());
             return;
         }
 
@@ -196,13 +207,32 @@ public class GameCommands extends CommandBase {
             return;
         }
 
+        runAutoScore(e, game, linkOpt.getAsString());
+    }
+
+    /**
+     * L'autoscore fa chiamate HTTP a CoralMC e disegna l'immagine di recap: fuori
+     * dal thread eventi di JDA, altrimenti blocca tutto il bot (comandi, ingressi
+     * in coda) finché non finisce.
+     */
+    private void runAutoScore(SlashCommandInteractionEvent e, Game game, String link) {
         e.deferReply().queue();
-        String err = gameService.autoScoreFromMatchLink(guild(e), game, e.getUser().getId(), linkOpt.getAsString());
-        if (err != null) {
-            fail(e, err);
-        } else {
-            ok(e, "Autoscore della partita #" + game.number + " eseguito con successo!");
-        }
+        Guild guild = guild(e);
+        String userId = e.getUser().getId();
+
+        ctx.scheduler.execute(() -> {
+            try {
+                String err = gameService.autoScoreFromMatchLink(guild, game, userId, link);
+                if (err != null) {
+                    fail(e, err);
+                } else {
+                    ok(e, "Autoscore della partita #" + game.number + " eseguito con successo!");
+                }
+            } catch (Exception ex) {
+                ex.printStackTrace();
+                fail(e, "Errore durante l'autoscore: " + ex.getMessage());
+            }
+        });
     }
 
     private void score(SlashCommandInteractionEvent e) {
@@ -220,13 +250,21 @@ public class GameCommands extends CommandBase {
             return;
         }
 
+        // score() genera e invia l'immagine di recap: lavoro di rete, non va
+        // sul thread eventi.
         e.deferReply().queue();
-        String error = gameService.score(guild(e), game, e.getUser().getId(), team, mvp == null ? null : mvp.getId());
-        if (error != null) {
-            fail(e, error);
-            return;
-        }
-        ok(e, "Partita #" + number + " scorata: vince il Team " + team);
+        Guild guild = guild(e);
+        String scorerId = e.getUser().getId();
+        String mvpId = mvp == null ? null : mvp.getId();
+
+        async(e, () -> {
+            String error = gameService.score(guild, game, scorerId, team, mvpId);
+            if (error != null) {
+                fail(e, error);
+                return;
+            }
+            ok(e, "Partita #" + number + " scorata: vince il Team " + team);
+        });
     }
 
     private void voidCurrent(SlashCommandInteractionEvent e) {
@@ -370,8 +408,8 @@ public class GameCommands extends CommandBase {
         if (game.winner != 0) {
             eb.addField("Vincitore", "Team " + game.winner, true);
         }
-        if (!game.mvp.isEmpty()) {
-            eb.addField("MVP", GameService.mention(game.mvp), true);
+        if (!game.mvpIds().isEmpty()) {
+            eb.addField("MVP", mentionAll(game.mvpIds()), true);
         }
         if (!game.scoredBy.isEmpty()) {
             eb.addField("Scorata da", GameService.mention(game.scoredBy), true);
@@ -401,18 +439,22 @@ public class GameCommands extends CommandBase {
             VoiceChannel vc = guild(e).getVoiceChannelById(q.vcId);
             String name = vc == null ? "(canale mancante: " + q.vcId + ")" : vc.getName();
 
-            int inQueue = 0;
-            if (vc != null) {
-                for (Member m : vc.getMembers()) {
-                    if (!m.getUser().isBot()) inQueue++;
-                }
+            var eligibility = gameService.eligibilityOf(vc);
+            int inQueue = eligibility.ready.size() + eligibility.blocked.size();
+
+            StringBuilder value = new StringBuilder()
+                    .append(q.modeName()).append(" · ").append(q.pickingMode.name().toLowerCase())
+                    .append(q.casual ? " · casual" : " · ranked")
+                    .append("\n").append(inQueue).append(" nel vocale · ")
+                    .append(eligibility.ready.size()).append("/").append(q.totalPlayers())
+                    .append(" pronti");
+
+            // Senza il motivo dell'esclusione una coda ferma sembra un bug del bot.
+            if (!eligibility.blocked.isEmpty()) {
+                value.append("\n⚠️ esclusi: ").append(String.join(", ", eligibility.blocked));
             }
 
-            eb.addField(name,
-                    q.modeName() + " · " + q.pickingMode.name().toLowerCase()
-                            + (q.casual ? " · casual" : " · ranked")
-                            + "\n" + inQueue + "/" + q.totalPlayers() + " in coda",
-                    true);
+            eb.addField(truncate(name, 256), truncate(value.toString(), 1024), false);
         }
         reply(e, eb.build());
     }
@@ -434,23 +476,27 @@ public class GameCommands extends CommandBase {
         }
 
         e.deferReply().queue();
-        byte[] banner = gameService.renderScoreBanner(game);
-        if (banner == null) {
-            fail(e, "Impossibile generare il banner per la partita #" + game.number);
-            return;
-        }
+        Game target = game;
 
-        EmbedBuilder eb = embeds.base(embeds.successColor())
-                .setTitle("🏆 Match Recap Partita #" + game.number + " (" + game.modeName() + ")")
-                .addField("🔴 Vincitori", gameService.listPlayers(game.winner == 1 ? game.team1 : game.team2), true)
-                .addField("🔵 Sconfitti", gameService.listPlayers(game.winner == 1 ? game.team2 : game.team1), true);
+        async(e, () -> {
+            byte[] banner = gameService.renderScoreBanner(target);
+            if (banner == null) {
+                fail(e, "Impossibile generare il banner per la partita #" + target.number);
+                return;
+            }
 
-        if (!game.mvp.isEmpty()) eb.addField("⭐ MVP", GameService.mention(game.mvp), false);
-        if (game.map != null && !game.map.isBlank()) eb.addField("🗺️ Mappa", "`" + game.map + "`", true);
+            EmbedBuilder eb = embeds.base(embeds.successColor())
+                    .setTitle("🏆 Match Recap Partita #" + target.number + " (" + target.modeName() + ")")
+                    .addField("🔴 Vincitori", gameService.listPlayers(target.winner == 1 ? target.team1 : target.team2), true)
+                    .addField("🔵 Sconfitti", gameService.listPlayers(target.winner == 1 ? target.team2 : target.team1), true);
 
-        eb.setImage("attachment://recap.png");
-        e.getHook().sendMessageEmbeds(eb.build())
-                .addFiles(FileUpload.fromData(banner, "recap.png"))
-                .queue();
+            if (!target.mvpIds().isEmpty()) eb.addField("⭐ MVP", mentionAll(target.mvpIds()), false);
+            if (target.map != null && !target.map.isBlank()) eb.addField("🗺️ Mappa", "`" + target.map + "`", true);
+
+            eb.setImage("attachment://recap.png");
+            e.getHook().sendMessageEmbeds(eb.build())
+                    .addFiles(FileUpload.fromData(banner, "recap.png"))
+                    .queue();
+        });
     }
 }

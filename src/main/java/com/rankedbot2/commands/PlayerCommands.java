@@ -152,23 +152,26 @@ public class PlayerCommands extends CommandBase {
         boolean full = e.getOption("completo") != null && e.getOption("completo").getAsBoolean();
         e.deferReply().queue();
 
-        if (!full && ctx.config.getBoolean("s-enabled", false)) {
-            try {
-                // Con un tema personalizzato in themes/ vince il layout a coordinate
-                // di config.yml, altrimenti si usa la card generata dal bot.
-                byte[] image = statsImages.renderPlayer(guild(e), p);
-                if (image == null) image = cards.renderStats(guild(e), p, target.getName());
+        // Il disegno scarica la skin del giocatore: fuori dal thread eventi.
+        async(e, () -> {
+            if (!full && ctx.config.getBoolean("s-enabled", false)) {
+                try {
+                    // Con un tema personalizzato in themes/ vince il layout a coordinate
+                    // di config.yml, altrimenti si usa la card generata dal bot.
+                    byte[] image = statsImages.renderPlayer(guild(e), p);
+                    if (image == null) image = cards.renderStats(guild(e), p, target.getName());
 
-                if (image != null) {
-                    e.getHook().sendFiles(FileUpload.fromData(image, "stats.png")).queue();
-                    return;
+                    if (image != null) {
+                        e.getHook().sendFiles(FileUpload.fromData(image, "stats.png")).queue();
+                        return;
+                    }
+                } catch (Exception ex) {
+                    System.err.println("Immagine stats non generata: " + ex.getMessage());
                 }
-            } catch (Exception ex) {
-                System.err.println("Immagine stats non generata: " + ex.getMessage());
             }
-        }
 
-        e.getHook().sendMessageEmbeds(statsEmbed(e, target, p)).queue();
+            e.getHook().sendMessageEmbeds(statsEmbed(e, target, p)).queue();
+        });
     }
 
     private net.dv8tion.jda.api.entities.MessageEmbed statsEmbed(SlashCommandInteractionEvent e, User user, Player p) {
@@ -221,26 +224,36 @@ public class PlayerCommands extends CommandBase {
             return;
         }
 
+        // La classifica scarica una testa per giocatore: sul thread eventi erano
+        // dieci richieste HTTP in fila con il bot fermo.
         if (ctx.config.getBoolean("s-enabled", false)) {
             e.deferReply().queue();
-            try {
-                byte[] image = cards.renderLeaderboard(top, stat);
-                if (image != null) {
-                    e.getHook().sendFiles(FileUpload.fromData(image, "leaderboard.png")).queue();
-                    return;
+            async(e, () -> {
+                try {
+                    byte[] image = cards.renderLeaderboard(top, stat);
+                    if (image != null) {
+                        e.getHook().sendFiles(FileUpload.fromData(image, "leaderboard.png")).queue();
+                        return;
+                    }
+                } catch (Exception ex) {
+                    System.err.println("Immagine leaderboard non generata: " + ex.getMessage());
                 }
-            } catch (Exception ex) {
-                System.err.println("Immagine leaderboard non generata: " + ex.getMessage());
-            }
+                reply(e, leaderboardEmbed(top, stat));
+            });
+            return;
         }
 
+        reply(e, leaderboardEmbed(top, stat));
+    }
+
+    private net.dv8tion.jda.api.entities.MessageEmbed leaderboardEmbed(List<Player> top, String stat) {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < top.size(); i++) {
             Player p = top.get(i);
             sb.append("**").append(i + 1).append(".** ")
                     .append(p.ign).append(" — `").append(statValue(p, stat)).append("`\n");
         }
-        reply(e, embeds.builder().setTitle("Classifica — " + stat).setDescription(sb.toString()).build());
+        return embeds.builder().setTitle("Classifica — " + stat).setDescription(sb.toString()).build();
     }
 
     private String statValue(Player p, String stat) {

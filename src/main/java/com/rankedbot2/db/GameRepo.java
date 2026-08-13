@@ -33,8 +33,8 @@ public class GameRepo {
                 INSERT OR REPLACE INTO games (number, queue_vc, state, players_each_team, team1, team2,
                     remaining, captain1, captain2, pick_turn, picks_left, map, text_channel, vc1, vc2,
                     winner, mvp, casual, scored_by, elo_changes, created_at, clan_war, clan1, clan2,
-                    kill_changes, death_changes, coral_match)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""";
+                    kill_changes, death_changes, coral_match, ended_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             int i = 1;
             ps.setInt(i++, g.number);
@@ -63,7 +63,8 @@ public class GameRepo {
             ps.setInt(i++, g.clan2);
             ps.setString(i++, serializeChanges(g.killChanges));
             ps.setString(i++, serializeChanges(g.deathChanges));
-            ps.setLong(i, g.coralMatch);
+            ps.setLong(i++, g.coralMatch);
+            ps.setLong(i, g.endedAt);
             ps.executeUpdate();
         } catch (SQLException e) {
             throw new IllegalStateException("Errore salvataggio partita: " + e.getMessage(), e);
@@ -107,6 +108,22 @@ public class GameRepo {
         } catch (SQLException e) {
             throw new IllegalStateException("Errore lettura partita da match CoralMC: " + e.getMessage(), e);
         }
+    }
+
+    /** Partite concluse che hanno ancora dei canali da eliminare. */
+    public List<Game> withChannelsToDelete() {
+        List<Game> out = new ArrayList<>();
+        String sql = """
+                SELECT * FROM games
+                WHERE state IN ('SCORED','VOIDED')
+                  AND (text_channel <> '' OR vc1 <> '' OR vc2 <> '')""";
+        try (PreparedStatement ps = conn.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) out.add(map(rs));
+        } catch (SQLException e) {
+            throw new IllegalStateException("Errore lettura partite da pulire: " + e.getMessage(), e);
+        }
+        return out;
     }
 
     public List<Game> byState(Game.State state) {
@@ -204,6 +221,7 @@ public class GameRepo {
         g.killChanges = parseChanges(rs.getString("kill_changes"));
         g.deathChanges = parseChanges(rs.getString("death_changes"));
         g.coralMatch = rs.getLong("coral_match");
+        g.endedAt = rs.getLong("ended_at");
         return g;
     }
 }
